@@ -1,0 +1,75 @@
+[package]
+name = "legume-numeric"
+version = "0.8.10"
+authors = ["Yongjin Park <ypp@stat.ubc.ca>"]
+edition = "2021"
+license = "MIT"
+description = "Numeric and ML foundation for the legume ecosystem (matrix, Leiden, candle, MCMC)"
+repository = "https://github.com/causalpathlab/legume-numeric"
+homepage = "https://github.com/causalpathlab/legume-numeric"
+rust-version = "1.91"
+readme = "README.md"
+include = ["src/**/*", "tests/**/*", "build.rs", "LICENSE", "NOTICE", "README.md", "LEIDEN_README.md"]
+
+[features]
+default = ["matrix", "param"]
+matrix = []
+param = ["matrix"]
+# Expose candle-util helpers (`legume_numeric::candle`)
+candle = ["matrix", "param"]
+# Expose MCMC engine (`legume_numeric::mcmc`); needs candle-core (always linked)
+mcmc = ["matrix"]
+cuda = ["candle-core/cuda", "candle-core/cudnn", "candle-nn/cuda"]
+metal = [
+    "candle-core/metal",
+    "candle-core/accelerate",
+    "candle-nn/metal",
+    "candle-nn/accelerate",
+]
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5.20", features = ["derive"] }
+ctrlc = { version = "3", features = ["termination"] }
+flate2 = "1.0.34"
+num_cpus = "1.16.0"
+rayon = "1.10.0"
+tempfile = "3.2"
+
+rand = "0.10.1"
+rand_distr = "0.6"
+
+nalgebra = "0.34"
+nalgebra-sparse = "0.11"
+num-traits = "0.2.19"
+
+approx = "0.5.1"
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+
+ndarray = { version = "0.17", features = ["rayon", "serde", "approx", "blas"] }
+ndarray-rand = "0.16"
+
+instant-distance = "0.6"
+multiversion = "0.8"
+indicatif = { version = "^0.18", features = ["rayon"] }
+parquet = "59"
+rustc-hash = "2.1"
+log = "0.4"
+zip = "8"
+clustering = { version = "0.2", features = ["parallel"] }
+petgraph = "0.8"
+special = "0.13"
+env_logger = "0.11"
+
+[dependencies.candle-core]
+version = "0.10"
+default-features = false
+
+[dependencies.candle-nn]
+version = "0.10"
+default-features = false
+
+[dev-dependencies]
+insta = "1"
+mimalloc = "0.1"

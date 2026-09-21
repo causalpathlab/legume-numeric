@@ -9,7 +9,7 @@ repository = "https://github.com/causalpathlab/legume-numeric"
 homepage = "https://github.com/causalpathlab/legume-numeric"
 rust-version = "1.91"
 readme = "README.md"
-include = ["src/**/*", "tests/**/*", "build.rs", "LICENSE", "NOTICE", "README.md", "LEIDEN_README.md"]
+include = ["src/**/*", "!**/.claude/**", "!**/.DS_Store", "tests/**/*", "build.rs", "LICENSE", "NOTICE", "README.md", "LEIDEN_README.md"]
 
 [features]
 default = ["matrix", "param"]

@@ -1,7 +1,7 @@
 //! Frozen feature-side primitives shared by `graph-embedding-util` and
 //! the senna topic-model encoders.
 //!
-//! The host loader lives in `auxiliary-data::frozen_features` (it knows
+//! The host loader lives in `data_beans::aux::frozen_features` (it knows
 //! about parquet I/O and gene-name canonicalization). This module turns
 //! the host-side `DMatrix` / `Vec<f32>` it returns into device tensors
 //! suitable for two distinct freeze mechanisms:
@@ -35,7 +35,7 @@ pub struct FrozenFeatureSide {
 
 impl FrozenFeatureSide {
     /// Convert a host-side `(e_feat, b_feat)` pair (typically the output
-    /// of `auxiliary_data::frozen_features::load_frozen_feature_host`)
+    /// of `data_beans::aux::frozen_features::load_frozen_feature_host`)
     /// into device tensors. `e_feat` is a column-major `nalgebra::DMatrix`,
     /// so this flips to candle's row-major `[D, H]` in one pass.
     pub fn from_parts(e_feat: &DMatrix<f32>, b_feat: &[f32], dev: &Device) -> Result<Self> {

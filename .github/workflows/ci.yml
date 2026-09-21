@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Every non-GPU feature. `cuda` / `metal` need hardware a hosted runner
+  # does not have; the Makefile in legume-rs covers those at install time.
+  FEATURES: candle,mcmc
+
+jobs:
+  # fmt and clippy are PINNED to the toolchain this crate is developed on,
+  # not floating on `stable`: a new rustfmt can reformat code it used to
+  # accept and a new clippy can add lints, so `--check` / `-D warnings` on a
+  # floating toolchain turns main red with no code change. Bumping the pin
+  # is a deliberate PR that carries the new version's lint fixes with it.
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy (-D warnings)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/system-deps
+      - uses: dtolnay/rust-toolchain@1.94
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # --all-targets so test and bench code is linted too.
+      - run: cargo clippy --all-targets --features "$FEATURES" -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/system-deps
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --features "$FEATURES"
+
+  # Downstream crates enable feature subsets (`default`, `candle` alone,
+  # `mcmc` alone), and a `#[cfg(feature = ...)]` boundary only breaks when
+  # someone builds without the feature next to it. Check each subset.
+  features:
+    name: check feature subsets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/system-deps
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: |
+          for f in "" candle mcmc; do
+            echo "::group::--features '$f'"
+            cargo check --features "$f"
+            echo "::endgroup::"
+          done
+          echo "::group::--no-default-features"
+          cargo check --no-default-features
+          echo "::endgroup::"
+
+  # `rust-version` is the highest `rust-version` among resolved dependencies.
+  # That is the floor the dependency graph imposes; this job checks whether
+  # this crate's own sources also build there. Non-blocking until it has
+  # gone green once -- then delete `continue-on-error` to make it a gate.
+  msrv:
+    name: MSRV (discovery, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/system-deps
+      - uses: dtolnay/rust-toolchain@1.91
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --features "$FEATURES"

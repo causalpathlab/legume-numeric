@@ -34,7 +34,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use matrix_util::ndarray_stat::RunningStatistics;
+    /// use legume_numeric::matrix::ndarray_stat::RunningStatistics;
     /// use ndarray::Ix1;
     /// let nrow = 10;
     /// RunningStatistics::new(Ix1(nrow));

@@ -44,9 +44,9 @@ pub use top_k::build_indexed_samples;
 /// log output interleaves cleanly above it. `label` is the initial `{msg}` (e.g.
 /// "Epochs", "Null rows"); the epoch trainers overwrite it each step with a live metric
 /// (`prog_bar.set_message`), matching `senna bge`. Delegating here keeps every
-/// candle-util bar on ONE style and ONE bridged `MultiProgress` — a locally-styled
+/// legume_numeric::candle bar on ONE style and ONE bridged `MultiProgress` — a locally-styled
 /// `ProgressBar::new` spawns a SECOND, unbridged bar that corrupts log output under
-/// `-v` (see the `matrix-util::progress` module doc).
+/// `-v` (see the `legume_numeric::matrix::progress` module doc).
 #[must_use]
 pub fn labeled_bar(label: &str, len: u64) -> ProgressBar {
     crate::matrix::progress::new_progress_bar(len).with_message(label.to_string())

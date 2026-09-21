@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use candle_util::sgvb::{GaussianRegressionSGVB, GaussianPrior, SGVBConfig, local_reparam_loss, BlackBoxLikelihood};
+//! use legume_numeric::candle::sgvb::{GaussianRegressionSGVB, GaussianPrior, SGVBConfig, local_reparam_loss, BlackBoxLikelihood};
 //!
 //! // Define your black-box likelihood
 //! struct MyLikelihood { /* ... */ }

@@ -384,7 +384,7 @@ impl EmbeddedNbTopicDecoder {
             .reshape((n, k, t))?; // [N, K, T]
         let beta_nkt = logits.broadcast_sub(&logz_11k)?.exp()?; // [N, K, T]
 
-        // Mixture rate `Σ_t β·θ` as a gemm — see `candle_util::batched_dot`.
+        // Mixture rate `Σ_t β·θ` as a gemm — see `legume_numeric::candle::batched_dot`.
         let rate_nk = batched_matvec(&beta_nkt, &theta_nt)?; // [N, K]
         if self.coarsening.is_identity() {
             return Ok(rate_nk);

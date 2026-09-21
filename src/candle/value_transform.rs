@@ -3,7 +3,7 @@
 //!
 //! # Model
 //!
-//! The upstream PB adjustment (`data-beans-alg::collapse_data`) fits a
+//! The upstream PB adjustment (`data_beans::alg::collapse_data`) fits a
 //! **multiplicative** model (matching the generative comment in
 //! `optimize`: `E[y] = E[μ_resid] · E[μ_adj]`):
 //!

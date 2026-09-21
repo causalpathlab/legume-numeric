@@ -7,7 +7,7 @@
 /// Single-quantile P² estimator for a stream of scalars.
 ///
 /// ```
-/// use matrix_util::running_quantile::P2Quantile;
+/// use legume_numeric::matrix::running_quantile::P2Quantile;
 /// let mut med = P2Quantile::new(0.5);
 /// for i in 0..1000 { med.add(f64::from(i)); }
 /// assert!((med.quantile() - 500.0).abs() < 25.0);

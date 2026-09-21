@@ -239,7 +239,7 @@ impl KnnGraph {
     ///
     /// Returns weights parallel to `self.edges`, all in (0, 1].
     /// Consistent with the softmax(-d) pattern used in counterfactual
-    /// inference (data-beans-alg) but with a global bandwidth.
+    /// inference (data_beans::alg) but with a global bandwidth.
     pub fn exp_kernel_weights(&self) -> Vec<f32> {
         if self.distances.is_empty() {
             return Vec::new();

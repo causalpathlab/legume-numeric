@@ -1,15 +1,15 @@
 //! Workspace-wide progress-bar style and the single [`MULTI_PROGRESS`] that
 //! every bar registers with.
 //!
-//! This lives in `matrix-util` — the lowest common dependency of `data-beans`,
-//! `data-beans-alg`, `auxiliary-data`, and the binaries — so the whole
+//! This lives in `legume_numeric::matrix` — the lowest common dependency of `data-beans`,
+//! `data_beans::alg`, `data_beans::aux`, and the binaries — so the whole
 //! workspace shares ONE style definition and ONE `MultiProgress`. That single
 //! `MultiProgress` is what lets `indicatif_log_bridge` (installed by
-//! `auxiliary_data::logging::init_logger`) interleave `log` output cleanly
+//! `data_beans::aux::logging::init_logger`) interleave `log` output cleanly
 //! above the bars. Duplicating the bar/`MultiProgress` in another crate (as
 //! `graph-embedding-util` once did) silently spawns a second, *unbridged*
 //! `MultiProgress` whose bars corrupt the log output — so every crate must
-//! draw through this module. `auxiliary_data::logging` re-exports these names
+//! draw through this module. `data_beans::aux::logging` re-exports these names
 //! for backward compatibility.
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};

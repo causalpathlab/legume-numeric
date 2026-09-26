@@ -102,11 +102,13 @@ pub fn read_parquet_string_column(
 /// reopens the file and walks every row again for each column, so reading `k`
 /// columns costs `k` full scans instead of one.
 ///
-/// Unlike [`read_parquet_string_column`], a non-string cell yields `""` rather
-/// than an error. The callers are annotation and label tables where a missing
-/// cell means "unlabelled" and refusing the whole file would lose the other
-/// columns; a missing *column* is still an error, since that is a schema
-/// mismatch rather than a gap in the data.
+/// Unlike [`read_parquet_string_column`], a non-string cell is not an error:
+/// a number is formatted (`INT64 7` → `"7"`, see
+/// [`crate::matrix::table::field_to_string`]) and a null yields `""`. The
+/// callers are annotation and label tables, where a numeric label (a cluster
+/// id) is still a label and a missing cell means "unlabelled"; a missing
+/// *column* is still an error, since that is a schema mismatch rather than a
+/// gap in the data.
 pub fn read_parquet_string_columns_by_name(
     file_path: &str,
     wanted: &[&str],
@@ -132,11 +134,12 @@ pub fn read_parquet_string_columns_by_name(
     let mut out: Vec<Vec<Box<str>>> = vec![Vec::new(); wanted.len()];
     for record in reader.get_row_iter(None)? {
         let row = record?;
+        let cells: Vec<_> = row.get_column_iter().map(|(_, f)| f).collect();
         for (k, &j) in idx.iter().enumerate() {
-            let v = row
-                .get_string(j)
-                .map(|s| s.clone().into_boxed_str())
-                .unwrap_or_else(|_| Box::from(""));
+            let v = cells.get(j).map_or_else(
+                || Box::from(""),
+                |f| crate::matrix::table::field_to_string(f),
+            );
             out[k].push(v);
         }
     }

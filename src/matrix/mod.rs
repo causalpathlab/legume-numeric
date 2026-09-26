@@ -33,6 +33,7 @@ pub mod rand_util;
 pub mod running_quantile;
 pub mod sparse_stat;
 pub mod stop;
+pub mod table;
 pub mod tensor_io;
 pub mod tensor_util;
 #[cfg(test)]

@@ -68,3 +68,24 @@ fn write_table_round_trips_through_the_matrix_reader() {
         nalgebra::DMatrix::<f32>::from_row_slice(2, 2, &[1.0, 3.0, 2.0, 4.0])
     );
 }
+
+#[test]
+fn string_columns_by_name_format_numeric_cells_instead_of_blanking_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("t.parquet");
+    let f = f.to_str().unwrap();
+    let genes = labels(&["g0", "g1"]);
+    write_table(
+        f,
+        &[
+            ("gene".into(), Column::Str(&genes)),
+            ("cluster".into(), Column::I32(&[3, 11])),
+            ("score".into(), Column::F32(&[0.5, 2.0])),
+        ],
+    )
+    .unwrap();
+    let cols = read_parquet_string_columns_by_name(f, &["cluster", "gene", "score"]).unwrap();
+    assert_eq!(cols[0], labels(&["3", "11"]));
+    assert_eq!(cols[1], genes);
+    assert_eq!(cols[2], labels(&["0.5", "2"]));
+}

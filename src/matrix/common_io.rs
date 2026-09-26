@@ -830,7 +830,8 @@ pub fn remove_all_files(files: &Vec<Box<str>>) -> anyhow::Result<()> {
 /// Extensions a data file's name is read through, stripped from the end of
 /// the name repeatedly by [`file_stem`]; dots inside the name stay.
 pub const DATA_FILE_EXTENSIONS: &[&str] = &[
-    "gz", "bz2", "zst", "tsv", "csv", "txt", "tab", "gaf", "gmt", "obo", "bed",
+    "gz", "bgz", "bz2", "zst", "tsv", "csv", "txt", "tab", "gaf", "gmt", "obo", "bed", "vcf",
+    "parquet", "pq",
 ];
 
 /// The file name minus its known extensions

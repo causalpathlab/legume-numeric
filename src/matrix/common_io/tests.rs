@@ -189,3 +189,13 @@ fn a_multi_member_gzip_is_read_to_the_end() {
         .collect();
     assert_eq!(got, ["CD8A", "MS4A1", "LYZ", "NKG7", "GNLY"]);
 }
+
+#[test]
+fn file_stem_drops_parquet_and_vcf_extensions_too() {
+    assert_eq!(
+        file_stem("a/Whole_Blood.v10.eQTLs.signif_pairs.parquet"),
+        "Whole_Blood.v10.eQTLs.signif_pairs"
+    );
+    assert_eq!(file_stem("ieu-a-2.vcf.gz"), "ieu-a-2");
+    assert_eq!(file_stem("x/goa_human.gaf.gz"), "goa_human");
+}

@@ -35,6 +35,7 @@ fn ndarray_io_test() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "tensor")]
 #[test]
 fn tensor_io_test() -> anyhow::Result<()> {
     let xx = candle_core::Tensor::runif(50, 50);

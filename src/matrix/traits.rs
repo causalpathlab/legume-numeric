@@ -1,4 +1,5 @@
 use crate::matrix::common_io::{Delimiter, ReadLinesOut};
+#[cfg(feature = "tensor")]
 use candle_core::{Device, Tensor};
 use num_traits::Float;
 
@@ -60,6 +61,7 @@ pub struct NRowNColTriplets<Scalar> {
     pub triplets: Vec<(usize, usize, Scalar)>,
 }
 
+#[cfg(feature = "tensor")]
 /// Reading off from `Tensor`
 pub trait ConvertMatOps {
     type Mat;
@@ -148,6 +150,7 @@ pub trait MatElemOps {
     fn log1p(&self) -> Self::Mat;
 }
 
+#[cfg(feature = "tensor")]
 /// Elementwise chains fused into ONE pass, because candle's CPU backend runs them
 /// one core at a time.
 ///
@@ -651,6 +654,7 @@ pub trait MeltOps {
         -> (Vec<Vec<Self::Scalar>>, Vec<Vec<usize>>);
 }
 
+#[cfg(feature = "tensor")]
 pub trait CandleDataLoaderOps {
     type Scalar;
     type Mat;

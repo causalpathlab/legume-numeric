@@ -1,6 +1,6 @@
 [package]
 name = "legume-numeric"
-version = "0.8.12"
+version = "0.8.13"
 authors = ["Yongjin Park <ypp@stat.ubc.ca>"]
 edition = "2021"
 license = "MIT"
@@ -12,19 +12,24 @@ readme = "README.md"
 include = ["src/**/*", "!**/.claude/**", "!**/.DS_Store", "tests/**/*", "build.rs", "LICENSE", "NOTICE", "README.md", "LEIDEN_README.md"]
 
 [features]
-default = ["matrix", "param"]
+default = ["matrix", "param", "tensor"]
 matrix = []
 param = ["matrix"]
+# candle `Tensor` support in the matrix code: conversions, tensor IO,
+# sampling and fused ops. Off, candle is not linked at all, for crates that
+# only need matrices (`default-features = false`).
+tensor = ["matrix", "dep:candle-core"]
 # Expose candle-util helpers (`legume_numeric::candle`)
-candle = ["matrix", "param"]
-# Expose MCMC engine (`legume_numeric::mcmc`); needs candle-core (always linked)
-mcmc = ["matrix"]
-cuda = ["candle-core/cuda", "candle-core/cudnn", "candle-nn/cuda"]
+candle = ["matrix", "param", "tensor", "dep:candle-nn"]
+# Expose MCMC engine (`legume_numeric::mcmc`)
+mcmc = ["matrix", "tensor"]
+cuda = ["tensor", "candle-core/cuda", "candle-core/cudnn", "candle-nn?/cuda"]
 metal = [
+    "tensor",
     "candle-core/metal",
     "candle-core/accelerate",
-    "candle-nn/metal",
-    "candle-nn/accelerate",
+    "candle-nn?/metal",
+    "candle-nn?/accelerate",
 ]
 
 [dependencies]
@@ -65,10 +70,12 @@ env_logger = "0.11"
 [dependencies.candle-core]
 version = "0.10"
 default-features = false
+optional = true
 
 [dependencies.candle-nn]
 version = "0.10"
 default-features = false
+optional = true
 
 [dev-dependencies]
 insta = "1"

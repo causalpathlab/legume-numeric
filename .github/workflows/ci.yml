@@ -72,6 +72,10 @@ jobs:
           echo "::group::--no-default-features"
           cargo check --no-default-features
           echo "::endgroup::"
+          # Matrices without candle: what `default-features = false` gives.
+          echo "::group::--no-default-features --features matrix,param"
+          cargo check --all-targets --no-default-features --features matrix,param
+          echo "::endgroup::"
 
   # `rust-version` is the highest `rust-version` among resolved dependencies.
   # That is the floor the dependency graph imposes; this job checks whether

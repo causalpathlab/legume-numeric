@@ -34,7 +34,9 @@ pub mod running_quantile;
 pub mod sparse_stat;
 pub mod stop;
 pub mod table;
+#[cfg(feature = "tensor")]
 pub mod tensor_io;
+#[cfg(feature = "tensor")]
 pub mod tensor_util;
 #[cfg(test)]
 mod test_support;

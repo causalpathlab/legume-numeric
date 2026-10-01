@@ -1,9 +1,15 @@
-use crate::matrix::traits::{CandleDataLoaderOps, IoOps, MeltOps};
+#[cfg(feature = "tensor")]
+use crate::matrix::traits::CandleDataLoaderOps;
+use crate::matrix::traits::{IoOps, MeltOps};
 
 pub trait TwoStatInference: Inference + TwoStatParam {}
 
 pub trait Inference {
+    // Rows as tensors only when candle is linked (feature `tensor`).
+    #[cfg(feature = "tensor")]
     type Mat: IoOps + MeltOps + CandleDataLoaderOps;
+    #[cfg(not(feature = "tensor"))]
+    type Mat: IoOps + MeltOps;
     type Scalar: Into<f32>;
 
     fn posterior_mean(&self) -> &Self::Mat;

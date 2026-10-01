@@ -280,6 +280,7 @@ where
     }
 }
 
+#[cfg(feature = "tensor")]
 impl<T> CandleDataLoaderOps for ndarray::Array2<T>
 where
     T: Float + FromPrimitive + candle_core::WithDType,

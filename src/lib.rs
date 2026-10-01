@@ -6,6 +6,12 @@
 //! - [`param`] — parametric helpers (ex `matrix-param`)
 //! - [`candle`] — candle training helpers (ex `candle-util`; feature `candle`)
 //! - [`mcmc`] — MCMC engine (ex `mcmc-util`; feature `mcmc`)
+//!
+//! Features: `matrix` and `param` need no candle. `tensor` (default) adds
+//! candle `Tensor` support to the matrix code: conversions, tensor IO,
+//! sampling and fused ops. `candle` and `mcmc` build on `tensor`. A crate
+//! that only needs matrices sets `default-features = false` and links no
+//! candle at all.
 
 pub mod leiden;
 

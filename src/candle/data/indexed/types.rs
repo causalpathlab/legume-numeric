@@ -20,7 +20,7 @@ pub struct IndexedSample {
 /// no-ops and pass silently; consumers that must not confuse a pad with
 /// feature `0` derive a validity mask from `values > 0`.
 pub struct IndexedMinibatchData {
-    /// [N] u32 — the source row of each minibatch row. Bootstrap duplicates
+    /// \[N\] u32 — the source row of each minibatch row. Bootstrap duplicates
     /// are kept, so this is a multiset, not a permutation. Lets a consumer
     /// index per-row state (a target table, a free latent) by source row.
     pub row_ids: Tensor,

@@ -4,7 +4,7 @@
 //! - [`linear`]: linear variants (incl. non-negative weights, indexed softmax)
 //! - [`layers`]: activations, IAF flows, sparsemax, misc layer helpers
 //! - [`gcn`]: sparse residual γ-gated GCN block over packed top-K reps
-//! - [`batch_norm`]: VarMap-aware BatchNorm (device-transfer safe)
+//! - [`batch_norm`](mod@batch_norm): VarMap-aware BatchNorm (device-transfer safe)
 
 pub mod batch_norm;
 pub mod gcn;

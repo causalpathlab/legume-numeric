@@ -1,6 +1,6 @@
 [package]
 name = "legume-numeric"
-version = "0.8.13"
+version = "0.8.14"
 authors = ["Yongjin Park <ypp@stat.ubc.ca>"]
 edition = "2021"
 license = "MIT"
@@ -12,13 +12,16 @@ readme = "README.md"
 include = ["src/**/*", "!**/.claude/**", "!**/.DS_Store", "tests/**/*", "build.rs", "LICENSE", "NOTICE", "README.md", "LEIDEN_README.md"]
 
 [features]
-default = ["matrix", "param", "tensor"]
+default = ["matrix", "param", "tensor", "ndarray"]
 matrix = []
 param = ["matrix"]
 # candle `Tensor` support in the matrix code: conversions, tensor IO,
 # sampling and fused ops. Off, candle is not linked at all, for crates that
 # only need matrices (`default-features = false`).
 tensor = ["matrix", "dep:candle-core"]
+# ndarray `Array2` support in the matrix and param code (IO, sampling,
+# stats, `ndarray_gamma`, kNN from ndarray views). Off, ndarray is not linked.
+ndarray = ["matrix", "dep:ndarray"]
 # Expose candle-util helpers (`legume_numeric::candle`)
 candle = ["matrix", "param", "tensor", "dep:candle-nn"]
 # Expose MCMC engine (`legume_numeric::mcmc`)
@@ -52,8 +55,7 @@ approx = "0.5.1"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 
-ndarray = { version = "0.17", features = ["rayon", "serde", "approx", "blas"] }
-ndarray-rand = "0.16"
+ndarray = { version = "0.17", features = ["rayon", "serde", "approx", "blas"], optional = true }
 
 instant-distance = "0.6"
 multiversion = "0.8"

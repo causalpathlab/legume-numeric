@@ -165,7 +165,7 @@ impl MultiLevelSusieVar {
         pip_from_alpha(&self.alpha()?)
     }
 
-    /// Get the mean of θ: E[θ_j] = Σ_l α_l[j] · μ_l[j]
+    /// Get the mean of θ: E\[θ_j\] = Σ_l α_l\[j\] · μ_l\[j\]
     /// Returns shape (p, k).
     pub fn theta_mean(&self) -> Result<Tensor> {
         let alpha = self.alpha()?; // (L, p, k)
@@ -211,7 +211,7 @@ impl MultiLevelSusieVar {
     /// Categorical KL summed across tree levels.
     ///
     /// At each level d, the per-group softmax over children gives α_d.
-    /// KL = Σ_d Σ_{l,g,c,k} α_d[l,g,c,k] * (log α_d[l,g,c,k] - log(1/C_g))
+    /// KL = Σ_d Σ_{l,g,c,k} α_d\[l,g,c,k\] * (log α_d\[l,g,c,k\] - log(1/C_g))
     /// where C_g is the number of valid children in group g at level d.
     pub fn kl_categorical(&self, _prior_alpha: f64) -> Result<Tensor> {
         let device = self.logits_per_level[0].device();
@@ -269,7 +269,7 @@ impl VariationalDistribution for MultiLevelSusieVar {
     }
 
     /// Get the variance of θ.
-    /// Var[θ_j] = Σ_l [α_l[j] · (σ²_l[j] + μ²_l[j])] - (Σ_l α_l[j] · μ_l[j])²
+    /// Var\[θ_j\] = Σ_l [α_l\[j\] · (σ²_l\[j\] + μ²_l\[j\])] - (Σ_l α_l\[j\] · μ_l\[j\])²
     fn var(&self) -> Result<Tensor> {
         let alpha = self.alpha()?; // (L, p, k)
         let mu = &self.beta_mean; // (L, p, k)

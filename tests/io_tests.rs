@@ -18,6 +18,7 @@ fn dmatrix_io_test() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "ndarray")]
 #[test]
 fn ndarray_io_test() -> anyhow::Result<()> {
     let xx = ndarray::Array2::<f32>::runif(50, 50);

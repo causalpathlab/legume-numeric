@@ -74,13 +74,13 @@ impl SpikeSlabVar {
 }
 
 impl VariationalDistribution for SpikeSlabVar {
-    /// E[θ_j] = π_j · μ_j
+    /// E\[θ_j\] = π_j · μ_j
     fn mean(&self) -> Result<Tensor> {
         let pi = self.inclusion_prob()?;
         pi.broadcast_mul(&self.beta_mean)
     }
 
-    /// Var[θ_j] = π_j(σ² + μ²) - (π_j μ_j)²
+    /// Var\[θ_j\] = π_j(σ² + μ²) - (π_j μ_j)²
     fn var(&self) -> Result<Tensor> {
         let pi = self.inclusion_prob()?;
         let mu = &self.beta_mean;

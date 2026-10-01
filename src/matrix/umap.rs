@@ -1,5 +1,5 @@
 //! Minimal UMAP-style SGD layout over a weighted edge list. Expects a
-//! pre-built fuzzy kNN graph (edges + [0,1] weights); the low-d kernel
+//! pre-built fuzzy kNN graph (edges + `[0, 1]` weights); the low-d kernel
 //! is `1 / (1 + a·d^(2b))` with the standard `(a, b) ≈ (1.929, 0.7915)`
 //! fit for `spread=1, min_dist=0.1`.
 //!

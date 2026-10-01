@@ -86,7 +86,7 @@ impl AggregateLinear {
     }
 
     /// Get hard assignments: which module each feature belongs to
-    /// Returns [d] tensor where each value is the module index (0..k)
+    /// Returns \[d\] tensor where each value is the module index (0..k)
     pub fn get_assignments(&self) -> Result<Tensor> {
         self.weight_dk.argmax(1) // argmax along module dimension
     }

@@ -1,3 +1,4 @@
+#[cfg(feature = "ndarray")]
 #[test]
 fn order_test() {
     use ndarray::{arr2, Array2};

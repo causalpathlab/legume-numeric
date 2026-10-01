@@ -13,9 +13,9 @@ pub struct TreeLevel {
     pub num_groups: usize,
     /// Maximum number of children across all groups (for padding)
     pub max_children: usize,
-    /// Validity mask: mask[group][child] = true if this child slot is occupied
+    /// Validity mask: mask\[group\]\[child\] = true if this child slot is occupied
     pub mask: Vec<Vec<bool>>,
-    /// For each variant j: flat_path_indices[j] = group[j] * max_children + child_index[j]
+    /// For each variant j: flat_path_indices\[j\] = group\[j\] * max_children + child_index\[j\]
     /// Used for efficient gather via index_select after reshaping logits to (L, G*C, k)
     pub flat_path_indices: Vec<usize>,
 }
@@ -97,7 +97,7 @@ impl VariantTree {
     /// Create a tree from per-level group assignments.
     ///
     /// # Arguments
-    /// * `assignments` - assignments[d][j] = group index of variant j at level d.
+    /// * `assignments` - assignments\[d\]\[j\] = group index of variant j at level d.
     ///   Level 0 is the coarsest (fewest groups), last level is finest.
     ///   Each level must have `num_variants` entries.
     pub fn from_assignments(num_variants: usize, assignments: &[Vec<usize>]) -> Self {

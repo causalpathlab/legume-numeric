@@ -56,7 +56,7 @@ pub struct SusieVar {
 impl SusieVar {
     /// Create a new Susie variational distribution (no component gates, no null).
     ///
-    /// All L components are always active. Use [`new_gated`] to enable
+    /// All L components are always active. Use `new_gated` to enable
     /// per-component Bernoulli gates for automatic component pruning.
     pub fn new(vb: VarBuilder, num_components: usize, p: usize, k: usize) -> Result<Self> {
         Self::new_inner(vb, num_components, p, k, None, false)
@@ -85,7 +85,7 @@ impl SusieVar {
     ///   mass naturally flows there.
     ///
     /// `alpha()` and `pip()` return only the p real positions; the null mass
-    /// is excluded. Use [`null_mass`] to inspect per-component null absorption.
+    /// is excluded. Use `null_mass` to inspect per-component null absorption.
     pub fn new_with_null(
         vb: VarBuilder,
         num_components: usize,
@@ -333,7 +333,7 @@ impl SusieVar {
 }
 
 impl VariationalDistribution for SusieVar {
-    /// Get the mean of θ: E[θ] = Σ_l (α_l ⊙ μ_l)
+    /// Get the mean of θ: E\[θ\] = Σ_l (α_l ⊙ μ_l)
     fn mean(&self) -> Result<Tensor> {
         self.theta_mean()
     }
@@ -377,7 +377,7 @@ impl ComponentVariational for SusieVar {
 }
 
 impl SusieVar {
-    /// Get the actual mean of θ: E[θ] = Σ_l (α_l ⊙ μ_l)
+    /// Get the actual mean of θ: E\[θ\] = Σ_l (α_l ⊙ μ_l)
     ///
     /// # Returns
     /// Mean of θ, shape (p, k)

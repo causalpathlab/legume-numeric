@@ -12,8 +12,8 @@ use crate::candle::sgvb::BlackBoxLikelihood;
 /// ```
 ///
 /// Requires two etas:
-/// - etas[0]: mean (μ)
-/// - etas[1]: log-variance (log σ²)
+/// - etas\[0\]: mean (μ)
+/// - etas\[1\]: log-variance (log σ²)
 pub struct GaussianLikelihood {
     y: Tensor,
 }

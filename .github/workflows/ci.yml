@@ -72,7 +72,7 @@ jobs:
           echo "::group::--no-default-features"
           cargo check --no-default-features
           echo "::endgroup::"
-          # Matrices without candle: what `default-features = false` gives.
+          # DMatrix only, no candle or ndarray: what `default-features = false` gives.
           echo "::group::--no-default-features --features matrix,param"
           cargo check --all-targets --no-default-features --features matrix,param
           echo "::endgroup::"

@@ -347,7 +347,7 @@ impl EmbeddedNbTopicDecoder {
     /// axis, `[N, D]`, so `Σ_g p_ng = 1` exactly.
     ///
     /// One `[N,K] × [K,D]` gemm against the normalized dictionary. The indexed
-    /// sibling ([`Self::mixture_rate_nk`]) instead gathers `[N·K, T]` logits,
+    /// sibling (`Self::mixture_rate_nk`) instead gathers `[N·K, T]` logits,
     /// which is the cheaper shape only while the scored set is a small
     /// per-row context.
     pub fn mixture_rate_nd(&self, log_theta_nk: &Tensor, full_kd: &Tensor) -> Result<Tensor> {

@@ -11,8 +11,8 @@ use std::f64::consts::PI;
 /// # Arguments
 /// * `current` - [N, K] current parameter values
 /// * `prior_samples` - [N, K] draws from the prior (e.g. N(0, I))
-/// * `lnpdf` - batched log-likelihood: [N, K] → [N]
-/// * `cur_lnpdf` - [N] cached log-likelihoods at current
+/// * `lnpdf` - batched log-likelihood: [N, K] → \[N\]
+/// * `cur_lnpdf` - \[N\] cached log-likelihoods at current
 /// * `max_shrink` - safety cap on slice iterations (e.g. 50)
 ///
 /// # Returns
@@ -117,7 +117,7 @@ pub fn batched_ess_step(
 ///
 /// # Arguments
 /// * `init` - [N, K] initial parameter values (e.g. from encoder)
-/// * `lnpdf` - batched log-likelihood: [N, K] → [N]
+/// * `lnpdf` - batched log-likelihood: [N, K] → \[N\]
 /// * `n_steps` - number of ESS transitions
 /// * `max_shrink` - safety cap on slice iterations per step (e.g. 50)
 ///
@@ -174,7 +174,7 @@ pub fn batched_ess_steps(
 ///
 /// # Arguments
 /// * `init` - [N, K] initial parameter values (e.g. from an encoder)
-/// * `lnpdf` - batched log-likelihood: [N, K] → [N]
+/// * `lnpdf` - batched log-likelihood: [N, K] → \[N\]
 /// * `n_steps` - total ESS transitions
 /// * `n_keep` - trailing states averaged, clamped to `[1, n_steps]`
 /// * `max_shrink` - safety cap on slice iterations per step (e.g. 50)

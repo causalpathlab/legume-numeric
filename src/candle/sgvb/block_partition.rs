@@ -12,7 +12,7 @@ use std::ops::Range;
 
 #[derive(Debug, Clone)]
 pub struct BlockPartition {
-    /// Block boundaries: block b spans features block_ranges[b].start..block_ranges[b].end
+    /// Block boundaries: block b spans features block_ranges\[b\].start..block_ranges\[b\].end
     pub block_ranges: Vec<Range<usize>>,
 }
 

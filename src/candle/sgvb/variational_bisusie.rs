@@ -7,12 +7,12 @@ use super::variational_susie::smoothed_sigmoid;
 
 /// Bi-directional Susie (Sum of Single Effects) variational distribution.
 ///
-/// θ[p,k] = Σ_l α_p[l,p] * π_k[l,k] * β[l,p,k]
+/// θ\[p,k\] = Σ_l α_p\[l,p\] * π_k\[l,k\] * β\[l,p,k\]
 ///
 /// where:
-/// - α_p[l,:] = softmax over predictors (dim P) — single-effect selection with null
-/// - π_k[l,:] = smoothed sigmoid per outcome (dim K) — independent trait inclusion
-/// - β[l,p,k] ~ N(μ[l,p,k], σ[l,p,k]²) — per-feature effect size
+/// - α_p\[l,:\] = softmax over predictors (dim P) — single-effect selection with null
+/// - π_k\[l,:\] = smoothed sigmoid per outcome (dim K) — independent trait inclusion
+/// - β\[l,p,k\] ~ N(μ\[l,p,k\], σ\[l,p,k\]²) — per-feature effect size
 ///
 /// The predictor axis uses softmax (enforcing single-effect per component),
 /// while the outcome axis uses independent sigmoid gates (allowing each component
@@ -136,7 +136,7 @@ impl BiSusieVar {
     }
 
     /// Joint selection weights for each (predictor, outcome) pair per component.
-    /// α_p[l,p] * π_k[l,k], shape (L, P, K).
+    /// α_p\[l,p\] * π_k\[l,k\], shape (L, P, K).
     pub fn alpha_joint(&self) -> Result<Tensor> {
         let alpha_p = self.alpha_predictor()?; // (L, P)
         let pi_k = self.pi_outcome()?; // (L, K)
@@ -144,7 +144,7 @@ impl BiSusieVar {
     }
 
     /// Posterior inclusion probabilities for each (predictor, outcome) pair.
-    /// PIP[p,k] = 1 - Π_l (1 - α_p[l,p] * π_k[l,k])
+    /// PIP\[p,k\] = 1 - Π_l (1 - α_p\[l,p\] * π_k\[l,k\])
     /// Returns shape (P, K).
     pub fn pip(&self) -> Result<Tensor> {
         pip_from_alpha(&self.alpha_joint()?)
@@ -178,7 +178,7 @@ impl BiSusieVar {
         self.num_outcomes
     }
 
-    /// E[θ[p,k]] = Σ_l α_p[l,p] * π_k[l,k] * μ[l,p,k]
+    /// E[θ\[p,k\]] = Σ_l α_p\[l,p\] * π_k\[l,k\] * μ\[l,p,k\]
     pub fn theta_mean(&self) -> Result<Tensor> {
         let joint = self.alpha_joint()?;
         joint.broadcast_mul(&self.beta_mean)?.sum(0)
@@ -187,7 +187,7 @@ impl BiSusieVar {
     /// Selection KL: categorical on predictor axis + Bernoulli on outcome axis.
     ///
     /// Predictor: KL(softmax(logits_p) || Uniform(P_logits))
-    /// Outcome: Σ_l Σ_k KL(Bernoulli(π_k[l,k]) || Bernoulli(π₀))
+    /// Outcome: Σ_l Σ_k KL(Bernoulli(π_k\[l,k\]) || Bernoulli(π₀))
     ///   where π₀ = prior_alpha / K
     pub fn kl_categorical(&self, prior_alpha: f64) -> Result<Tensor> {
         // Predictor axis: categorical KL (includes null if present)

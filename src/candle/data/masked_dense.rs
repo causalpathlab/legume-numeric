@@ -21,7 +21,7 @@
 //! The level's rows are uploaded once and a minibatch is an `index_select` of
 //! them, the way the packed loader worked; only the width changed. The upload
 //! takes the pseudobulk posterior in its native `[D, P]` layout and transposes
-//! it nowhere — see [`crate::candle::data::loader_util::upload_columns_as_rows`].
+//! it nowhere — see `crate::candle::data::loader_util::upload_columns_as_rows`.
 
 use crate::candle::data::loader_util::{bootstrap_indices, upload_columns_as_rows};
 use crate::matrix::rand_util::mix_seed;

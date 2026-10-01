@@ -19,9 +19,12 @@ pub mod knockoff;
 pub mod layout;
 pub mod membership;
 pub mod mtx_io;
+#[cfg(feature = "ndarray")]
 pub mod ndarray_io;
 // pub mod ndarray_rsvd;
+#[cfg(feature = "ndarray")]
 pub mod ndarray_stat;
+#[cfg(feature = "ndarray")]
 pub mod ndarray_util;
 pub mod pair_graph;
 pub mod parquet;

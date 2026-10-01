@@ -84,6 +84,7 @@ where
         &self.names
     }
 
+    #[cfg(feature = "ndarray")]
     /// Build an index from `ndarray` **row** views — each view is one point,
     /// labelled by the matching entry of `names` (same length, same order).
     /// Coordinates are copied in, so the views need not outlive the dictionary.
@@ -93,6 +94,7 @@ where
         )
     }
 
+    #[cfg(feature = "ndarray")]
     /// Build an index in which **each row** of `data` is a point (ndarray is
     /// row-major, so rows are the contiguous unit). `names.len()` must equal
     /// `data.nrows()`.
@@ -112,20 +114,22 @@ where
     /// Build an index in which **each column** of `data` is a point (nalgebra is
     /// column-major). `names.len()` must equal `data.ncols()`.
     ///
-    /// Note the orientation flip versus [`from_ndarray`](Self::from_ndarray)
+    /// Note the orientation flip versus `from_ndarray`
     /// (rows): each constructor takes the input's *contiguous* axis as the point.
     pub fn from_dmatrix(data: nalgebra::DMatrix<f32>, names: Vec<K>) -> Self {
         Self::from_dvector_views(data.column_iter().collect(), names)
     }
 
-    /// An empty dictionary (no points; every search returns no neighbours). The
-    /// `_ndarray_`/`_dvector_` suffix only fixes the `ColumnDictOps` view type and
-    /// is otherwise identical.
+    /// An empty dictionary (no points; every search returns no neighbours),
+    /// typed for ndarray views. Identical to
+    /// [`empty_dvector_views`](Self::empty_dvector_views) but for the view type.
+    #[cfg(feature = "ndarray")]
     pub fn empty_ndarray_views() -> Self {
         <ColumnDict<K> as ColumnDictOps<K, ndarray::ArrayView1<f32>>>::empty()
     }
 
-    /// See [`empty_ndarray_views`](Self::empty_ndarray_views).
+    /// An empty dictionary (no points; every search returns no neighbours),
+    /// typed for nalgebra vector views.
     pub fn empty_dvector_views() -> Self {
         <ColumnDict<K> as ColumnDictOps<K, nalgebra::DVectorView<f32>>>::empty()
     }
@@ -439,6 +443,7 @@ impl MakeVecPoint for nalgebra::DVectorView<'_, f32> {
     }
 }
 
+#[cfg(feature = "ndarray")]
 impl MakeVecPoint for ndarray::ArrayView1<'_, f32> {
     fn to_vp(&self) -> VecPoint {
         VecPoint {

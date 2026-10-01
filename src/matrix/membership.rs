@@ -446,6 +446,14 @@ impl GeneIndexResolver {
 ///
 /// Ambiguity behavior: identical to [`GeneIndexResolver`] — last
 /// registered wins on collision (consistent with `HashMap::insert`).
+///
+/// Deprecated with [`canon_locus`]: locus parsing belongs to
+/// legume-genomic-types, and this crate will drop the resolver in its next
+/// minor release.
+#[deprecated(
+    since = "0.8.16",
+    note = "key loci with genomic_data::coordinates::parse_interval and PeakCoord::locus_key (crate legume-genomic-types)"
+)]
 #[derive(Clone)]
 pub struct LocusIndexResolver {
     mem: Membership,
@@ -486,6 +494,7 @@ pub fn canon_locus(name: &str) -> Box<str> {
     folded.into_boxed_str()
 }
 
+#[allow(deprecated)]
 impl LocusIndexResolver {
     /// Build a resolver over `loci`. Each input name is registered both
     /// raw and in canonical form; lookups are tried raw first, then
@@ -496,7 +505,6 @@ impl LocusIndexResolver {
         for (i, name) in loci.iter().enumerate() {
             let idx_str: Box<str> = i.to_string().into_boxed_str();
             pairs.push((name.clone(), idx_str.clone()));
-            #[allow(deprecated)]
             let canon = canon_locus(name);
             if canon.as_ref() != name.as_ref() {
                 pairs.push((canon, idx_str));
@@ -516,7 +524,6 @@ impl LocusIndexResolver {
                 return Some(i);
             }
         }
-        #[allow(deprecated)]
         let canon = canon_locus(query);
         self.mem.get(canon.as_ref())?.parse::<usize>().ok()
     }
@@ -622,6 +629,7 @@ mod tests {
             "chr2_3000_4000".into(),
             "X:5000-6000".into(),
         ];
+        #[allow(deprecated)]
         let r = LocusIndexResolver::build(&loci, false);
         // Exact match still wins.
         assert_eq!(r.resolve("chr1:1000-2000"), Some(0));
@@ -640,6 +648,7 @@ mod tests {
     #[test]
     fn locus_resolver_case_variants_of_chr() {
         let loci: Vec<Box<str>> = vec!["CHR1:100-200".into()];
+        #[allow(deprecated)]
         let r = LocusIndexResolver::build(&loci, false);
         // All chr/CHR/Chr variants strip identically.
         assert_eq!(r.resolve("chr1:100-200"), Some(0));

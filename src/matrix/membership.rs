@@ -455,6 +455,15 @@ pub struct LocusIndexResolver {
 /// Canonicalize a locus string: strip leading `chr` (case-insensitive)
 /// and fold `:`, `-` to `_`. Empty strings pass through unchanged.
 /// Allocations are avoided when the input is already canonical.
+///
+/// Deprecated: the fold also rewrites contig names that carry `-`, so it
+/// is not a parser. The locus grammar and its canonical key live in
+/// legume-genomic-types, `genomic_data::coordinates` (`parse_interval`,
+/// `PeakCoord::locus_key`).
+#[deprecated(
+    since = "0.8.15",
+    note = "use genomic_data::coordinates::parse_interval (crate legume-genomic-types) and PeakCoord::locus_key"
+)]
 pub fn canon_locus(name: &str) -> Box<str> {
     if name.is_empty() {
         return name.into();
@@ -487,6 +496,7 @@ impl LocusIndexResolver {
         for (i, name) in loci.iter().enumerate() {
             let idx_str: Box<str> = i.to_string().into_boxed_str();
             pairs.push((name.clone(), idx_str.clone()));
+            #[allow(deprecated)]
             let canon = canon_locus(name);
             if canon.as_ref() != name.as_ref() {
                 pairs.push((canon, idx_str));
@@ -506,6 +516,7 @@ impl LocusIndexResolver {
                 return Some(i);
             }
         }
+        #[allow(deprecated)]
         let canon = canon_locus(query);
         self.mem.get(canon.as_ref())?.parse::<usize>().ok()
     }

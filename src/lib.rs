@@ -15,6 +15,11 @@
 
 pub mod leiden;
 
+/// candle-core, for crates that use `Tensor` through the `tensor` feature
+/// without a direct dependency on candle.
+#[cfg(feature = "tensor")]
+pub use candle_core;
+
 #[cfg(feature = "matrix")]
 pub mod matrix;
 

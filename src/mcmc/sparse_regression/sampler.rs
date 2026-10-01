@@ -133,7 +133,7 @@ impl<P: ComponentPrior, F: Fn(&P::Theta) -> f32> McmcModel for SparseModel<P, F>
 
 /// Blackbox MCMC sparse regression.
 ///
-/// Convenience wrapper around [`SparseModel`] + [`run_mcmc`].
+/// Convenience wrapper around `SparseModel` + `run_mcmc`.
 pub fn mcmc_sparse<P: ComponentPrior>(
     lnpdf: &impl Fn(&P::Theta) -> f32,
     p: usize,

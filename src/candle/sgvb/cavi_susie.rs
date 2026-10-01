@@ -92,7 +92,7 @@ impl CaviSusieResult {
         Ok(Tensor::from_vec(flat, self.pip.len(), device)?)
     }
 
-    /// Compute posterior mean of beta: E[β] = Σ_l (α_l ⊙ μ_l), shape (p,).
+    /// Compute posterior mean of beta: E\[β\] = Σ_l (α_l ⊙ μ_l), shape (p,).
     pub fn beta_mean(&self) -> Vec<f64> {
         let p = self.pip.len();
         let mut beta = vec![0.0; p];

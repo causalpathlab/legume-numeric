@@ -157,7 +157,7 @@ fn apply_global_l2_clip(
 /// takes pre-computed gradients so it can time `backward()` separately.
 ///
 /// A step whose global gradient norm is not finite is **skipped** (see
-/// [`apply_global_l2_clip`]); unlike [`clip_and_step_dense`] this does not
+/// `apply_global_l2_clip`); unlike [`clip_and_step_dense`] this does not
 /// report the skip, since its callers don't track it.
 pub fn clip_grads_and_step<O: Optimizer>(
     opt: &mut O,
@@ -182,7 +182,7 @@ pub fn clip_grads_and_step<O: Optimizer>(
 /// trainer's [`PhaseTimers`]).
 ///
 /// Returns `false` if the step was **skipped** because the global gradient
-/// norm was not finite (see [`apply_global_l2_clip`]).
+/// norm was not finite (see `apply_global_l2_clip`).
 pub fn clip_and_step_dense(
     adam: &mut AdamW,
     grads: candle_core::backprop::GradStore,

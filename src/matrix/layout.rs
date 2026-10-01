@@ -503,7 +503,7 @@ fn classical_mds_2d(d2: &Mat) -> Mat {
 ///   `σ_q` = distance from q to its `knn`-th nearest landmark in feature space
 ///   `K_qp` = exp(-(‖z_q − `z_p`‖ / `σ_q)^α`)
 ///   `w_qp` = `K_qp` / `Σ_p`' `K_qp`'
-///   (`x_q`, `y_q`) = `Σ_p` `w_qp` · `landmark_coord`[p]
+///   (`x_q`, `y_q`) = `Σ_p` `w_qp` · `landmark_coord[p]`
 #[must_use]
 pub fn project_cells_nystrom(
     query_kn: &Mat,

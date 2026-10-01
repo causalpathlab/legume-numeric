@@ -109,7 +109,7 @@ where
     }
 
     /// Add a dense column directly. Skips zero / non-finite entries
-    /// so `npos` stays equivalent to what [`add_sparse_column`] would
+    /// so `npos` stays equivalent to what `add_sparse_column` would
     /// produce — useful when an upstream coarsening step yields a dense
     /// `[D, n]` intermediate we don't want to re-sparsify.
     ///
@@ -164,7 +164,7 @@ where
     }
 
     /// Add every column of a dense `[D, n]` matrix in column-major
-    /// order. Calls [`add_dense_column`] per column so the inner loop
+    /// order. Calls `add_dense_column` per column so the inner loop
     /// stays vectorizable; the per-column overhead is negligible
     /// (one `+= 1` for `ncols_processed`) compared to the per-element
     /// accumulation work.

@@ -20,7 +20,7 @@ pub trait IndexedEncoderT {
     ///
     /// # Returns `(log_z_nk, kl_loss_n)`
     /// * `log_z_nk` - [N, K_topics] log-probabilities on the simplex
-    /// * `kl_loss_n` - [N] per-sample KL divergence
+    /// * `kl_loss_n` - \[N\] per-sample KL divergence
     fn forward_indexed_t(
         &self,
         indices: &Tensor,

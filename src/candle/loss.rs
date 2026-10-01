@@ -137,7 +137,7 @@ pub fn poisson_likelihood(x_nd: &Tensor, rate_nd: &Tensor) -> Result<Tensor> {
 /// * `log_recon_nd` - log-probability tensor (log-reconstruction) [n, d]
 /// * `dropout_logit_1d` - dropout logits [1, d]
 ///
-/// Returns: log-likelihood per sample [n]
+/// Returns: log-likelihood per sample \[n\]
 ///
 pub fn zi_topic_log_likelihood(
     x_nd: &Tensor,
@@ -201,7 +201,7 @@ pub fn zi_topic_likelihood(
 /// * `mu_nd` - mean parameter μ [N, D]
 /// * `log_phi_1d` - log dispersion parameter log(φ) [1, D]
 ///
-/// Returns: log-likelihood per sample [N]
+/// Returns: log-likelihood per sample \[N\]
 ///
 /// Thin wrapper over [`nb_log_likelihood_elem`]: broadcasts the per-feature
 /// `log_phi_1d [1, D]` to `x`'s shape, scores elementwise, then sums over the

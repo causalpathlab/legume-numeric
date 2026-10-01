@@ -42,8 +42,8 @@ pub fn lgamma_approx(x: &Tensor) -> Result<Tensor> {
 /// ```
 ///
 /// Requires two etas:
-/// - etas[0]: log-mean (log μ)
-/// - etas[1]: log-dispersion (log r)
+/// - etas\[0\]: log-mean (log μ)
+/// - etas\[1\]: log-dispersion (log r)
 pub struct NegativeBinomialLikelihood {
     y: Tensor,
 }

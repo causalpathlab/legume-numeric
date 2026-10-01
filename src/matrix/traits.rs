@@ -306,8 +306,8 @@ where
     /// * returns each column's embedding results (row x 2d)
     ///
     /// for each element r of each column c:
-    ///  ret[r, 2i] = sin(x[r,c]/10000^(2i/d))
-    ///  ret[r, 2i + 1] = cos(x[r,c]/10000^(2i/d))
+    ///  `ret[r, 2i] = sin(x[r,c]/10000^(2i/d))`
+    ///  `ret[r, 2i + 1] = cos(x[r,c]/10000^(2i/d))`
     /// where i in [0, d/2-1]
     fn positional_embedding_columns(&self, emb_dim: usize) -> anyhow::Result<Self::Mat>;
 }
@@ -666,7 +666,7 @@ pub trait CandleDataLoaderOps {
     /// Return (nrows, ncols) dimensions
     fn data_shape(&self) -> (usize, usize);
 
-    /// Extract row i as Vec<f32>.
+    /// Extract row i as `Vec<f32>`.
     ///
     /// WARNING: default creates ALL row tensors then picks one — O(N*D) for O(D) work.
     /// Implementors should override this.

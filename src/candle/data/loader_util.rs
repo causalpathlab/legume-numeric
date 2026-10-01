@@ -64,7 +64,7 @@ impl Minibatches {
     /// Bootstrap-resample the data into `chunks` of `batch_size` indices.
     ///
     /// Not a partition: indices are drawn *with replacement* via
-    /// [`bootstrap_indices`], so one pass over `chunks` is a bootstrap
+    /// `bootstrap_indices`, so one pass over `chunks` is a bootstrap
     /// cover — some samples repeat, some are skipped.
     pub fn shuffle_minibatch(&mut self, batch_size: usize) {
         let mut rng = rand::rng();

@@ -209,7 +209,7 @@ impl RssSvd {
     ///
     /// # Arguments
     /// * `d_sq` - Squared singular values d²_k, length K.
-    /// * `y_raw` - Projected z-scores V'z, stored as y_raw[k][t].
+    /// * `y_raw` - Projected z-scores V'z, stored as y_raw\[k\]\[t\].
     ///
     /// # Returns
     /// Estimated λ ∈ [0, 1].

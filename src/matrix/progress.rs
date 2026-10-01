@@ -38,7 +38,7 @@ const STEADY_TICK: Duration = Duration::from_millis(200);
 /// Create a progress bar registered with the shared [`MULTI_PROGRESS`] and
 /// styled with the standard template. Attach a trailing label with
 /// [`ProgressBar::with_message`], e.g. `new_progress_bar(n).with_message("blocks")`.
-/// Repaints on the shared [`STEADY_TICK`] cadence.
+/// Repaints on the shared `STEADY_TICK` cadence.
 #[must_use]
 pub fn new_progress_bar(len: u64) -> ProgressBar {
     let prog_bar = MULTI_PROGRESS.add(ProgressBar::new(len));
@@ -54,7 +54,7 @@ pub fn new_progress_bar(len: u64) -> ProgressBar {
 /// Create a spinner registered with the shared [`MULTI_PROGRESS`] for
 /// unbounded / streaming work (no known total). `template` is an indicatif
 /// spinner template (e.g. `"{spinner} streamed {pos} fragments ({per_sec})"`);
-/// the shared tick frames and the shared [`STEADY_TICK`] cadence are applied so
+/// the shared tick frames and the shared `STEADY_TICK` cadence are applied so
 /// the spinner animates and stays visually consistent across crates.
 #[must_use]
 pub fn new_spinner(template: &str) -> ProgressBar {

@@ -15,7 +15,7 @@
 //!
 //! Every read here composes without forming the `[N, H]` residual: rows are
 //! gathered from `u` and multiplied by `v`, and a right factor is applied to
-//! `v` first. The one dense product is [`residual`], for folding the factors
+//! `v` first. The one dense product is `residual`, for folding the factors
 //! back into the base when training ends ([`fold`]), after which the table is
 //! a plain one and no reader needs to know LoRA was involved.
 

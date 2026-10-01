@@ -177,7 +177,7 @@ where
     }
 }
 
-/// Convenience wrapper around [`RegressionModel`] + [`run_mcmc`].
+/// Convenience wrapper around `RegressionModel` + `run_mcmc`.
 pub fn mcmc_sparse_regression<P>(
     x: &DMatrix<f32>,
     y: &DVector<f32>,

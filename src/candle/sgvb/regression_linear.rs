@@ -68,8 +68,8 @@ impl<V: VariationalDistribution, P: Prior + AnalyticalKL> RegressionSGVB<V, P> {
     ///
     /// Instead of sampling θ (p-dimensional) and computing η = Xθ,
     /// we directly sample η in n-space:
-    ///   E[η] = X @ E[θ],  V[η] = (X⊙X) @ V[θ]
-    ///   η = E[η] + √V[η] ⊙ ε,  ε ~ N(0, I)
+    ///   E\[η\] = X @ E\[θ\],  V\[η\] = (X⊙X) @ V\[θ\]
+    ///   η = E\[η\] + √V\[η\] ⊙ ε,  ε ~ N(0, I)
     ///
     /// Uses antithetic sampling by default: pairs each ε with −ε so the
     /// empirical mean of noise is exactly zero. This strictly reduces

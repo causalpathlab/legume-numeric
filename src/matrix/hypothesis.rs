@@ -3,7 +3,7 @@
 //!
 //! These operate on a plain `&[f32]` of per-unit statistics — one p-value per
 //! test, one observation per resample — and are deliberately separate from the
-//! matrix-shaped statistics modules ([`crate::matrix::ndarray_stat`],
+//! matrix-shaped statistics modules (`ndarray_stat`,
 //! [`crate::matrix::sparse_stat`]), which accumulate sufficient statistics over an axis
 //! rather than testing a hypothesis about a sample.
 //!

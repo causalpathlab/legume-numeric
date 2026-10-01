@@ -520,6 +520,7 @@ where
     }
 }
 
+#[cfg(feature = "tensor")]
 impl<T> ConvertMatOps for DMatrix<T>
 where
     T: nalgebra::RealField + Copy + candle_core::WithDType,
@@ -548,6 +549,7 @@ where
     }
 }
 
+#[cfg(feature = "tensor")]
 impl<T> ConvertMatOps for CscMatrix<T>
 where
     T: nalgebra::RealField + Copy + candle_core::WithDType,
@@ -1250,6 +1252,7 @@ where
     }
 }
 
+#[cfg(feature = "tensor")]
 impl<T> CandleDataLoaderOps for DMatrix<T>
 where
     T: nalgebra::RealField + Copy + candle_core::WithDType,

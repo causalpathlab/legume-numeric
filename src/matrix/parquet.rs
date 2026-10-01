@@ -169,11 +169,7 @@ pub fn read_table_columns(
     let wanted: Vec<Box<str>> = numeric_cols.iter().map(|&c| c.into()).collect();
     let reader = ParquetReader::new(file_path, None, None, Some(&wanted))?;
     let ncols = reader.column_names.len();
-    let nrows = if ncols == 0 {
-        0
-    } else {
-        reader.row_major_data.len() / ncols
-    };
+    let nrows = reader.row_major_data.len().checked_div(ncols).unwrap_or(0);
     let numbers = numeric_cols
         .iter()
         .map(|&c| {

@@ -842,10 +842,7 @@ pub fn file_stem(path: &str) -> String {
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string());
-    loop {
-        let Some((base, ext)) = stem.rsplit_once('.') else {
-            break;
-        };
+    while let Some((base, ext)) = stem.rsplit_once('.') {
         if base.is_empty() || !DATA_FILE_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
             break;
         }

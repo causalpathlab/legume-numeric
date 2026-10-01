@@ -73,18 +73,39 @@ impl KnnGraph {
     /// * `data` - matrix (n x d), where each row is a point
     /// * `args` - KNN graph construction parameters
     pub fn from_rows(data: &DMatrix<f32>, args: KnnGraphArgs) -> anyhow::Result<KnnGraph> {
-        let nn = data.nrows();
-        let n_neighbours = neighbours_per_point(args.knn, nn);
-        let lists = if nn <= EXACT_THRESHOLD {
-            let transposed = data.transpose();
-            let points_vec = transposed.column_iter().collect::<Vec<_>>();
-            let names = (0..nn).collect::<Vec<_>>();
-            let dict = ColumnDict::from_dvector_views(points_vec, names);
-            search_dict(&dict, nn, n_neighbours, args.block_size)?
-        } else {
-            search_rows(data, n_neighbours)
-        };
-        Self::from_neighbours(nn, &lists, args.reciprocal)
+        let lists = neighbour_lists(data, &args)?;
+        Self::from_neighbours(data.nrows(), &lists, args.reciprocal)
+    }
+
+    /// [`KnnGraph::from_columns_fuzzy`] over row vectors.
+    pub fn from_rows_fuzzy(
+        data: &DMatrix<f32>,
+        args: KnnGraphArgs,
+    ) -> anyhow::Result<(KnnGraph, Vec<f32>)> {
+        let lists = neighbour_lists(data, &args)?;
+        let graph = Self::from_neighbours(data.nrows(), &lists, args.reciprocal)?;
+        let weights = umap_edge_weights(&graph.edges, &lists);
+        Ok((graph, weights))
+    }
+
+    /// The kNN graph of the columns of `points`, and UMAP's fuzzy membership
+    /// of each edge (parallel to `edges`), as umap-learn and uwot compute it:
+    ///
+    /// 1. each point's weights over its OWN `knn` neighbours only:
+    ///    `exp(-(d - ρ) / σ)`, ρ its nearest distance, σ set so they sum to
+    ///    `log2(knn + 1)` (UMAP counts the point itself among its
+    ///    `n_neighbors`, so `knn` others is `n_neighbors = knn + 1`);
+    /// 2. zero toward a point it did not list;
+    /// 3. the fuzzy union of the two directions, `a + b - a·b`.
+    ///
+    /// [`KnnGraph::fuzzy_kernel_weights`] instead calibrates each point over
+    /// every edge touching it after the union, so a point many others list
+    /// gets a wider kernel and a one-sided edge a weight from both ends.
+    pub fn from_columns_fuzzy(
+        points: &DMatrix<f32>,
+        args: KnnGraphArgs,
+    ) -> anyhow::Result<(KnnGraph, Vec<f32>)> {
+        Self::from_rows_fuzzy(&points.transpose(), args)
     }
 
     /// The graph implied by every point's directed neighbour list.
@@ -444,8 +465,13 @@ impl KnnGraph {
     /// Returns `(network, total_edge_weight)`. Pass `total_edge_weight` to
     /// [`modularity_to_cpm_resolution`] to get a CPM-scale resolution.
     pub fn to_leiden_network(&self) -> (crate::leiden::Network, f64) {
+        self.to_leiden_network_with(&self.fuzzy_kernel_weights())
+    }
+
+    /// [`KnnGraph::to_leiden_network`] with the edge weights given, parallel
+    /// to `edges` (e.g. from [`KnnGraph::from_rows_fuzzy`]).
+    pub fn to_leiden_network_with(&self, weights: &[f32]) -> (crate::leiden::Network, f64) {
         let n = self.n_nodes;
-        let weights = self.fuzzy_kernel_weights();
 
         let mut node_degree = vec![0.0f32; n];
         let mut n_edges = vec![0usize; n];
@@ -602,6 +628,61 @@ fn create_jobs(ntot: usize, block_size: usize) -> Vec<(usize, usize)> {
 mod tests;
 
 /// One point's neighbours: `(indices, distances)`, nearest first.
+/// Every point's own neighbours (self excluded), exact up to
+/// [`EXACT_THRESHOLD`] points.
+fn neighbour_lists(data: &DMatrix<f32>, args: &KnnGraphArgs) -> anyhow::Result<Vec<NeighbourList>> {
+    let nn = data.nrows();
+    let n_neighbours = neighbours_per_point(args.knn, nn);
+    Ok(if nn <= EXACT_THRESHOLD {
+        let transposed = data.transpose();
+        let points_vec = transposed.column_iter().collect::<Vec<_>>();
+        let names = (0..nn).collect::<Vec<_>>();
+        let dict = ColumnDict::from_dvector_views(points_vec, names);
+        search_dict(&dict, nn, n_neighbours, args.block_size)?
+    } else {
+        search_rows(data, n_neighbours)
+    })
+}
+
+/// UMAP's membership of a point in each of its neighbours, from its
+/// distances to them (itself excluded): `exp(-(d - ρ) / σ)`, ρ the nearest
+/// distance and σ set so they sum to `log2(len + 1)`, as UMAP counts the
+/// point itself among its `n_neighbors`.
+pub fn umap_memberships(dists: &[f32]) -> Vec<f32> {
+    let Some(rho) = dists.iter().copied().reduce(f32::min) else {
+        return Vec::new();
+    };
+    let target = ((dists.len() + 1) as f32).log2();
+    let sigma = smooth_knn_sigma(dists, rho, target);
+    dists
+        .iter()
+        .map(|&d| directed_umap_weight(d, rho, sigma))
+        .collect()
+}
+
+/// UMAP's fuzzy membership of each of `edges` (canonical `i < j`) from the
+/// points' own neighbour lists; see [`KnnGraph::from_columns_fuzzy`].
+fn umap_edge_weights(edges: &[(usize, usize)], lists: &[NeighbourList]) -> Vec<f32> {
+    // Each point's directed weights, parallel to its own list.
+    let directed: Vec<Vec<f32>> = lists
+        .par_iter()
+        .map(|(_, dists)| umap_memberships(dists))
+        .collect();
+    let toward = |from: usize, to: usize| -> f32 {
+        let (nb, _) = &lists[from];
+        nb.iter()
+            .position(|&j| j == to)
+            .map_or(0.0, |at| directed[from][at])
+    };
+    edges
+        .par_iter()
+        .map(|&(i, j)| {
+            let (a, b) = (toward(i, j), toward(j, i));
+            a + b - a * b
+        })
+        .collect()
+}
+
 type NeighbourList = (Vec<usize>, Vec<f32>);
 
 /// A canonical `(i, j)` key with a distance and a bitmask saying which

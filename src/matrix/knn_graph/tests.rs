@@ -556,3 +556,70 @@ fn the_all_pairs_arm_equals_brute_force_above_the_exact_threshold() {
         assert!((d - w.1).abs() < 1e-5);
     }
 }
+
+/// Points scattered so that kNN lists are not symmetric: some points are
+/// listed by many, others by none.
+fn scattered(n: usize) -> DMatrix<f32> {
+    use rand::{rngs::SmallRng, RngExt, SeedableRng};
+    let mut rng = SmallRng::seed_from_u64(7);
+    DMatrix::from_fn(n, 2, |i, _| {
+        // A dense core and a sparse halo.
+        let r: f32 = rng.random_range(0.0..1.0);
+        if i % 4 == 0 {
+            r * 10.0
+        } else {
+            r
+        }
+    })
+}
+
+#[test]
+fn fuzzy_weights_follow_umap_from_each_points_own_list() {
+    let data = scattered(60);
+    let k = 5;
+    let (graph, weights) = KnnGraph::from_rows_fuzzy(
+        &data,
+        KnnGraphArgs {
+            knn: k,
+            block_size: 16,
+            reciprocal: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(weights.len(), graph.num_edges());
+
+    // Reference: brute-force own lists, UMAP's directed weights, union.
+    let n = data.nrows();
+    let dist = |i: usize, j: usize| (data.row(i) - data.row(j)).norm();
+    let own: Vec<Vec<(usize, f32)>> = (0..n)
+        .map(|i| {
+            let mut d: Vec<(usize, f32)> = (0..n)
+                .filter(|&j| j != i)
+                .map(|j| (j, dist(i, j)))
+                .collect();
+            d.sort_by(|a, b| a.1.total_cmp(&b.1));
+            d.truncate(k);
+            d
+        })
+        .collect();
+    let directed = |i: usize, j: usize| -> f32 {
+        let ds: Vec<f32> = own[i].iter().map(|p| p.1).collect();
+        let rho = ds[0];
+        let sigma = smooth_knn_sigma(&ds, rho, ((k + 1) as f32).log2());
+        own[i]
+            .iter()
+            .find(|p| p.0 == j)
+            .map_or(0.0, |p| directed_umap_weight(p.1, rho, sigma))
+    };
+    for (&(i, j), &w) in graph.edges.iter().zip(&weights) {
+        let (a, b) = (directed(i, j), directed(j, i));
+        let want = a + b - a * b;
+        assert!((w - want).abs() < 1e-4, "edge ({i},{j}): {w} vs {want}");
+    }
+    // A point's weights over its own list sum to log2(k + 1).
+    let sums: Vec<f32> = (0..n)
+        .map(|i| own[i].iter().map(|p| directed(i, p.0)).sum())
+        .collect();
+    let target = ((k + 1) as f32).log2();
+    assert!(sums.iter().all(|s| (s - target).abs() < 0.05), "{sums:?}");
+}

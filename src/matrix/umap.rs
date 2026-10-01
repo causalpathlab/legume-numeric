@@ -8,9 +8,13 @@
 //! coords buffer — UMAP's SGD is robust to these; the reference numba
 //! impl does the same.
 //!
-//! Pair this with [`crate::matrix::knn_graph::KnnGraph::fuzzy_kernel_weights`]
+//! Pair this with [`crate::matrix::knn_graph::KnnGraph::from_columns_fuzzy`]
 //! to build the input edge list. Shared by `senna layout umap` and
 //! `senna lineage-plot`.
+//!
+//! As uwot and umap-learn, each undirected edge is sampled from both ends:
+//! each end in turn pulls the pair together and is pushed away from
+//! `negative_sample_rate` random points. The result is centred.
 //!
 //! References:
 //! - McInnes, Healy & Melville, *arXiv* 1802.03426 — UMAP.
@@ -94,7 +98,7 @@ impl HogwildCoords {
 impl Umap {
     /// Run HOGWILD! SGD on the given undirected edge list.
     ///
-    /// * `edges` — `(i, j, weight)` with `weight ∈ (0, 1]`, `i < j`.
+    /// * `edges`: `(i, j, weight)` with `weight ∈ (0, 1]`, each pair once.
     /// * `n` — number of points (rows in `init`/output).
     /// * `init` — row-major `n × 2` initial coords.
     pub fn fit(&self, edges: &[(usize, usize, f32)], n: usize, init: &[f32]) -> Vec<f32> {
@@ -141,14 +145,17 @@ impl Umap {
                         if *ne > epoch_f {
                             return;
                         }
-                        apply_attraction(coords, i, j, alpha, a, b);
-
-                        for _ in 0..n_neg {
-                            let k = rng.random_range(0..n);
-                            if k == i {
-                                continue;
+                        // Both directions of the symmetric graph, as uwot
+                        // samples them: each end is a head once.
+                        for (head, tail) in [(i, j), (j, i)] {
+                            apply_attraction(coords, head, tail, alpha, a, b);
+                            for _ in 0..n_neg {
+                                let k = rng.random_range(0..n);
+                                if k == head {
+                                    continue;
+                                }
+                                apply_repulsion(coords, head, k, alpha, a, b);
                             }
-                            apply_repulsion(coords, i, k, alpha, a, b);
                         }
 
                         *ne += epochs_per_sample[e_idx];
@@ -156,6 +163,11 @@ impl Umap {
                 );
         }
 
+        // Centred, as uwot returns it.
+        for c in 0..2 {
+            let mean = (0..n).map(|i| y[i * 2 + c]).sum::<f32>() / n.max(1) as f32;
+            (0..n).for_each(|i| y[i * 2 + c] -= mean);
+        }
         y
     }
 }
@@ -190,4 +202,74 @@ fn apply_repulsion(y: &HogwildCoords, i: usize, k: usize, alpha: f32, a: f32, b:
 #[inline]
 fn clamp4(x: f32) -> f32 {
     x.clamp(-4.0, 4.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::matrix::knn_graph::{KnnGraph, KnnGraphArgs};
+    use nalgebra::DMatrix;
+
+    /// Uniform points in a square, laid out by t-UMAP on their kNN graph.
+    fn layout(n: usize) -> Vec<f32> {
+        let mut rng = SmallRng::seed_from_u64(3);
+        let data = DMatrix::from_fn(n, 2, |_, _| rng.random_range(0.0_f32..1.0));
+        let (graph, w) = KnnGraph::from_rows_fuzzy(
+            &data,
+            KnnGraphArgs {
+                knn: 14,
+                block_size: 256,
+                reciprocal: false,
+            },
+        )
+        .unwrap();
+        let edges: Vec<_> = graph
+            .edges
+            .iter()
+            .zip(&w)
+            .map(|(&(i, j), &w)| (i, j, w))
+            .collect();
+        let init: Vec<f32> = (0..n * 2).map(|_| rng.random_range(-10.0..10.0)).collect();
+        Umap {
+            n_epochs: 200,
+            ..Umap::tumap()
+        }
+        .fit(&edges, n, &init)
+    }
+
+    /// Mean distance to the nearest other point, for the points `of`.
+    fn spacing(y: &[f32], n: usize, of: std::ops::Range<usize>) -> f32 {
+        let at = |i: usize| Vector2::new(y[i * 2], y[i * 2 + 1]);
+        let m = of.len() as f32;
+        of.map(|i| {
+            (0..n)
+                .filter(|&j| j != i)
+                .map(|j| (at(i) - at(j)).norm())
+                .fold(f32::INFINITY, f32::min)
+        })
+        .sum::<f32>()
+            / m
+    }
+
+    #[test]
+    fn points_are_spaced_alike_whatever_their_index() {
+        // Every edge is stored once as (low, high): sampled from that end
+        // only, high-index points were pushed apart less and bunched (a
+        // ratio near 0.84 here).
+        let n = 1500;
+        let y = layout(n);
+        let (low, high) = (spacing(&y, n, 0..n / 2), spacing(&y, n, n / 2..n));
+        let ratio = high / low;
+        assert!((0.9..1.1).contains(&ratio), "high/low spacing {ratio}");
+    }
+
+    #[test]
+    fn the_layout_is_centred() {
+        let n = 300;
+        let y = layout(n);
+        for c in 0..2 {
+            let mean = (0..n).map(|i| y[i * 2 + c]).sum::<f32>() / n as f32;
+            assert!(mean.abs() < 1e-3, "mean {mean}");
+        }
+    }
 }

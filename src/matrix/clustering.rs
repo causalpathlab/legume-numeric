@@ -132,7 +132,7 @@ pub fn leiden_clustering(
         latent_pre.scale_columns_inplace();
     }
 
-    let graph = KnnGraph::from_rows(
+    let (graph, weights) = KnnGraph::from_rows_fuzzy(
         &latent_pre,
         KnnGraphArgs {
             knn,
@@ -146,7 +146,7 @@ pub fn leiden_clustering(
         graph.num_edges()
     );
 
-    let (network, total_edge_weight) = graph.to_leiden_network();
+    let (network, total_edge_weight) = graph.to_leiden_network_with(&weights);
     let resolution_scaled = knn_graph::modularity_to_cpm_resolution(resolution, total_edge_weight);
     let seed_val = seed.map(|s| s as usize);
 

@@ -21,6 +21,30 @@ where
     fn std(&self) -> Self::Output;
 }
 
+/// How hard [`RandomizedAlgs::rsvd_with`] works for its subspace.
+///
+/// [`RandomizedAlgs::rsvd`] uses the defaults. A
+/// spectrum whose leading values sit close together (a diffusion operator,
+/// say) needs more power iterations and oversampling to separate them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RsvdArgs {
+    /// Power (subspace) iterations, each one product with `X` and one with `Xᵀ`.
+    /// With very few (0 or 1) the result depends on the seeded start.
+    pub power_iters: usize,
+    /// Extra columns carried through the iteration when `max_rank` truncates;
+    /// ignored otherwise.
+    pub oversample: usize,
+}
+
+impl Default for RsvdArgs {
+    fn default() -> Self {
+        Self {
+            power_iters: 5,
+            oversample: 5,
+        }
+    }
+}
+
 /// some linear algebra routines
 pub trait RandomizedAlgs {
     type InMat;
@@ -35,7 +59,17 @@ pub trait RandomizedAlgs {
     /// * `U`: `n x k`
     /// * `D`: `k x 1`
     /// * `V`: `d x k`
-    fn rsvd(&self, max_rank: usize) -> anyhow::Result<(Self::OutMat, Self::DVec, Self::OutMat)>;
+    fn rsvd(&self, max_rank: usize) -> anyhow::Result<(Self::OutMat, Self::DVec, Self::OutMat)> {
+        self.rsvd_with(max_rank, &RsvdArgs::default())
+    }
+
+    /// [`rsvd`](Self::rsvd) with the power iterations and oversampling set by
+    /// `args`.
+    fn rsvd_with(
+        &self,
+        max_rank: usize,
+        args: &RsvdArgs,
+    ) -> anyhow::Result<(Self::OutMat, Self::DVec, Self::OutMat)>;
 }
 
 /// Convert to and from the vector of triplets

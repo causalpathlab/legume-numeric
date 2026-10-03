@@ -1,5 +1,5 @@
 use super::*;
-use crate::matrix::traits::{RandomizedAlgs, SampleOps};
+use crate::matrix::traits::{RandomizedAlgs, RsvdArgs, SampleOps};
 
 /// A planted rank-one spike over unit noise, well above the noise edge:
 /// the randomised SVD must recover its singular value and direction.
@@ -48,4 +48,70 @@ fn rsvd_leading_value_of_noise_stays_at_the_edge() {
         "randomised value {} far below exact {exact}",
         s[0]
     );
+}
+
+/// A symmetric matrix whose leading eigenvalues sit close together, as a
+/// diffusion operator's do: `Q diag(λ) Qᵀ` with λ falling slowly from 1.
+fn clustered(n: usize, seed: u64) -> (DMatrix<f64>, Vec<f64>) {
+    let q = DMatrix::<f64>::rnorm_seeded(n, n, seed).qr().q();
+    let lambda: Vec<f64> = (0..n).map(|i| 0.99f64.powi(i as i32)).collect();
+    (
+        &q * DMatrix::from_diagonal(&DVector::from_vec(lambda.clone())) * q.transpose(),
+        lambda,
+    )
+}
+
+#[test]
+fn rsvd_with_more_iterations_and_oversampling_separates_a_clustered_spectrum() {
+    let (x, lambda) = clustered(300, 3);
+    let worst = |s: &DVector<f64>| {
+        (0..15)
+            .map(|i| (s[i] - lambda[i]).abs())
+            .fold(0.0f64, f64::max)
+    };
+    let (_, s_default, _) = x.rsvd(15).unwrap();
+    let args = RsvdArgs {
+        power_iters: 20,
+        oversample: 10,
+    };
+    let (_, s_more, _) = x.rsvd_with(15, &args).unwrap();
+    assert!(
+        worst(&s_more) < 1e-3,
+        "20 iterations, 10 oversample: worst error {}",
+        worst(&s_more)
+    );
+    assert!(
+        worst(&s_more) < worst(&s_default) / 5.0,
+        "more iterations and oversampling should be clearly better: {} vs default {}",
+        worst(&s_more),
+        worst(&s_default)
+    );
+}
+
+#[test]
+fn rsvd_defaults_are_the_long_standing_settings() {
+    // Every existing `rsvd` caller depends on these staying put.
+    assert_eq!(
+        RsvdArgs::default(),
+        RsvdArgs {
+            power_iters: 5,
+            oversample: 5
+        }
+    );
+}
+
+#[test]
+fn rsvd_with_caps_an_oversized_oversample() {
+    let x = DMatrix::<f64>::rnorm_seeded(40, 30, 5);
+    let args = RsvdArgs {
+        power_iters: 2,
+        oversample: usize::MAX,
+    };
+    let (_, s, _) = x.rsvd_with(10, &args).unwrap();
+    assert_eq!(s.len(), 10);
+}
+
+#[test]
+fn rsvd_of_an_empty_matrix_is_an_error() {
+    assert!(DMatrix::<f64>::zeros(0, 5).rsvd(3).is_err());
 }

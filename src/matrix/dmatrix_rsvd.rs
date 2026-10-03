@@ -81,19 +81,22 @@ where
     }
 }
 
-fn _subspace_iteration<T, D>(xx: &D, rank_and_oversample: usize) -> anyhow::Result<DMatrix<T>>
+fn _subspace_iteration<T, D>(
+    xx: &D,
+    rank_and_oversample: usize,
+    power_iters: usize,
+) -> anyhow::Result<DMatrix<T>>
 where
     T: nalgebra::RealField + num_traits::Float + Copy,
     D: IntoDense<DMatrix<T>>,
 {
-    let max_iter = 5; // five should be enough
-
     let nc = xx.num_columns();
-    // Fixed seed: the subspace iterations below converge onto the dominant
-    // subspace regardless of the start, so a pinned (rather than entropy) draw
-    // makes the whole randomized SVD reproducible run-to-run — which in turn
-    // pins every downstream consumer (binary-sketch collapse, layout, SVD fits)
-    // — without changing what subspace it recovers.
+    // Fixed seed: with enough power iterations the subspace converges onto
+    // the dominant one regardless of the start, so a pinned (rather than
+    // entropy) draw makes the whole randomized SVD reproducible run-to-run —
+    // which in turn pins every downstream consumer (binary-sketch collapse,
+    // layout, SVD fits) — without changing what subspace it recovers. With
+    // very few iterations the result does depend on this start.
     let mut qq = DMatrix::<T>::runif_seeded(nc, rank_and_oversample, RSVD_SUBSPACE_SEED);
     let half = T::from(0.5).expect("no half found");
     qq.iter_mut().for_each(|x| *x -= half);
@@ -102,7 +105,7 @@ where
     // basis must span exactly the range of the product it came from: a
     // pivoted LU factor does not (its permutation is lost), and iterating on
     // a row-permuted range does not converge onto the dominant subspace.
-    for _i in 0..max_iter {
+    for _i in 0..power_iters {
         let ll = xx.matmul(&qq).qr().q();
         qq = xx.transpose_matmul(&ll).qr().q();
     }
@@ -119,6 +122,7 @@ where
 fn _randomized_svd<T, D>(
     xx: &D,
     max_rank: usize,
+    args: &RsvdArgs,
 ) -> anyhow::Result<(DMatrix<T>, DVector<T>, DMatrix<T>)>
 where
     T: nalgebra::RealField + num_traits::Float + Copy,
@@ -132,15 +136,22 @@ where
 
     if max_rank > 0 && rank > max_rank {
         rank = max_rank;
-        oversample = 5;
+        oversample = args.oversample;
     }
 
-    debug_assert!(rank > 0, "Must be at least rank = 1");
+    anyhow::ensure!(rank > 0, "randomized SVD of an empty {nr} x {nc} matrix");
 
     // Keep the oversampled basis through the projection: its columns are
     // not ordered by singular value, so truncating here would discard part
     // of the dominant subspace. The rank is applied to the small SVD below.
-    let qq = _subspace_iteration(xx, rank + oversample)?;
+    // Columns beyond the matrix's own rank add nothing; the cap sits above
+    // anything the default oversampling reaches, so it changes no default
+    // result and only stops an oversized `oversample` from overflowing or
+    // allocating for nothing.
+    let width = rank
+        .saturating_add(oversample)
+        .min(nr.min(nc) + RsvdArgs::default().oversample);
+    let qq = _subspace_iteration(xx, width, args.power_iters)?;
     let rank = rank.min(qq.ncols());
 
     // let bb = qq.transpose() * xx
@@ -167,8 +178,12 @@ where
     type DVec = DVector<T>;
     type Scalar = T;
 
-    fn rsvd(&self, max_rank: usize) -> anyhow::Result<(Self::OutMat, Self::DVec, Self::OutMat)> {
-        _randomized_svd(self, max_rank)
+    fn rsvd_with(
+        &self,
+        max_rank: usize,
+        args: &RsvdArgs,
+    ) -> anyhow::Result<(Self::OutMat, Self::DVec, Self::OutMat)> {
+        _randomized_svd(self, max_rank, args)
     }
 }
 
@@ -181,8 +196,12 @@ where
     type DVec = DVector<T>;
     type Scalar = T;
 
-    fn rsvd(&self, max_rank: usize) -> anyhow::Result<(Self::OutMat, Self::DVec, Self::OutMat)> {
-        _randomized_svd(self, max_rank)
+    fn rsvd_with(
+        &self,
+        max_rank: usize,
+        args: &RsvdArgs,
+    ) -> anyhow::Result<(Self::OutMat, Self::DVec, Self::OutMat)> {
+        _randomized_svd(self, max_rank, args)
     }
 }
 
@@ -195,8 +214,12 @@ where
     type DVec = DVector<T>;
     type Scalar = T;
 
-    fn rsvd(&self, max_rank: usize) -> anyhow::Result<(Self::OutMat, Self::DVec, Self::OutMat)> {
-        _randomized_svd(self, max_rank)
+    fn rsvd_with(
+        &self,
+        max_rank: usize,
+        args: &RsvdArgs,
+    ) -> anyhow::Result<(Self::OutMat, Self::DVec, Self::OutMat)> {
+        _randomized_svd(self, max_rank, args)
     }
 }
 

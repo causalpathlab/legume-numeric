@@ -20,14 +20,15 @@ pub fn nystrom_basis(u: &DMatrix<f32>, s: &DVector<f32>) -> DMatrix<f32> {
     u * DMatrix::from_diagonal(&sinv)
 }
 
-trait IntoDense<OutMat> {
-    fn matmul(&self, other: &OutMat) -> OutMat;
-    fn transpose_matmul(&self, other: &OutMat) -> OutMat;
+/// What the subspace iteration needs of `X`: products with `X` and `Xᵀ`.
+trait LinOp<T: nalgebra::Scalar> {
+    fn matmul(&self, other: &DMatrix<T>) -> DMatrix<T>;
+    fn transpose_matmul(&self, other: &DMatrix<T>) -> DMatrix<T>;
     fn num_rows(&self) -> usize;
     fn num_columns(&self) -> usize;
 }
 
-impl<T> IntoDense<DMatrix<T>> for DMatrix<T>
+impl<T> LinOp<T> for DMatrix<T>
 where
     T: nalgebra::RealField + num_traits::Float + Copy,
 {
@@ -76,9 +77,9 @@ where
     }
 }
 
-impl<T> IntoDense<DMatrix<T>> for SparseOp<'_, T>
+impl<T> LinOp<T> for SparseOp<'_, T>
 where
-    T: nalgebra::RealField + num_traits::Float + Copy,
+    T: nalgebra::RealField + Copy,
 {
     fn matmul(&self, other: &DMatrix<T>) -> DMatrix<T> {
         let x = &*self.csr;
@@ -99,10 +100,15 @@ where
 /// Rows below which a thread is not worth splitting off.
 const MIN_ROWS_PER_TASK: usize = 256;
 
+/// Output columns a row accumulates at once, in registers rather than in the
+/// output row, which would be reloaded and stored once per entry.
+const COLUMN_BLOCK: usize = 8;
+
 /// `S · B` for `S` given by compressed rows (`offsets`, `indices`, `values`),
 /// one row of the product per task. `B` is read through its transpose, so a
-/// row of `B` is contiguous; each output row sums its entries in stored
-/// order, so the result does not depend on the thread count.
+/// row of `B` is contiguous; each output entry sums in stored order, so the
+/// result does not depend on the thread count. The product is bound by
+/// gathering rows of `B`, not by arithmetic, so wider SIMD buys nothing.
 fn rows_times_dense<T>(
     offsets: &[usize],
     indices: &[usize],
@@ -124,10 +130,22 @@ where
         .enumerate()
         .with_min_len(MIN_ROWS_PER_TASK)
         .for_each(|(i, row)| {
-            for p in offsets[i]..offsets[i + 1] {
-                let v = values[p];
-                let src = &bt[indices[p] * c..(indices[p] + 1) * c];
-                for (o, &s) in row.iter_mut().zip(src) {
+            let entries = offsets[i]..offsets[i + 1];
+            let (idx, val) = (&indices[entries.clone()], &values[entries]);
+            let mut k0 = 0;
+            while k0 + COLUMN_BLOCK <= c {
+                let mut acc = [T::zero(); COLUMN_BLOCK];
+                for (&j, &v) in idx.iter().zip(val) {
+                    let src = &bt[j * c + k0..j * c + k0 + COLUMN_BLOCK];
+                    for (a, &s) in acc.iter_mut().zip(src) {
+                        *a += v * s;
+                    }
+                }
+                row[k0..k0 + COLUMN_BLOCK].copy_from_slice(&acc);
+                k0 += COLUMN_BLOCK;
+            }
+            for (&j, &v) in idx.iter().zip(val) {
+                for (o, &s) in row[k0..].iter_mut().zip(&bt[j * c + k0..(j + 1) * c]) {
                     *o += v * s;
                 }
             }
@@ -142,7 +160,7 @@ fn _subspace_iteration<T, D>(
 ) -> anyhow::Result<DMatrix<T>>
 where
     T: nalgebra::RealField + num_traits::Float + Copy,
-    D: IntoDense<DMatrix<T>>,
+    D: LinOp<T>,
 {
     let nc = xx.num_columns();
     // Fixed seed: with enough power iterations the subspace converges onto
@@ -164,8 +182,6 @@ where
         qq = xx.transpose_matmul(&ll).qr().q();
     }
 
-    // let qq = DMatrix::<T>::runif(nc, rank_and_oversample);
-
     let qr_q = xx.matmul(&qq).qr().q();
     let kk = rank_and_oversample.min(qr_q.ncols());
     let ret = qr_q.columns(0, kk).into_owned();
@@ -180,7 +196,7 @@ fn _randomized_svd<T, D>(
 ) -> anyhow::Result<(DMatrix<T>, DVector<T>, DMatrix<T>)>
 where
     T: nalgebra::RealField + num_traits::Float + Copy,
-    D: IntoDense<DMatrix<T>>,
+    D: LinOp<T>,
 {
     let nr = xx.num_rows();
     let nc = xx.num_columns();
@@ -208,14 +224,14 @@ where
     let qq = _subspace_iteration(xx, width, args.power_iters)?;
     let rank = rank.min(qq.ncols());
 
-    // let bb = qq.transpose() * xx
+    // bb = qqᵀ · xx
     let bb = xx.transpose_matmul(&qq).transpose();
 
     let svd = bb.svd(true, true);
 
     if let (Some(svd_u), Some(svd_vt)) = (svd.u, svd.v_t) {
         return Ok((
-            qq.clone() * svd_u.columns(0, rank).into_owned(),
+            &qq * svd_u.columns(0, rank),
             svd.singular_values.rows(0, rank).into_owned(),
             svd_vt.transpose().columns(0, rank).into_owned(),
         ));

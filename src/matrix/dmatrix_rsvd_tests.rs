@@ -1,5 +1,5 @@
 use super::*;
-use crate::matrix::traits::{RandomizedAlgs, RsvdArgs, SampleOps};
+use crate::matrix::traits::{MatTriplets, RandomizedAlgs, RsvdArgs, SampleOps};
 
 /// A planted rank-one spike over unit noise, well above the noise edge:
 /// the randomised SVD must recover its singular value and direction.
@@ -131,14 +131,6 @@ fn sparse_triplets(nr: usize, nc: usize, per_row: usize, seed: u64) -> Vec<(usiz
     out
 }
 
-fn coo(nr: usize, nc: usize, t: &[(usize, usize, f64)]) -> nalgebra_sparse::coo::CooMatrix<f64> {
-    let mut coo = nalgebra_sparse::coo::CooMatrix::new(nr, nc);
-    for &(i, j, v) in t {
-        coo.push(i, j, v);
-    }
-    coo
-}
-
 fn assert_close(a: &DMatrix<f64>, b: &DMatrix<f64>) {
     assert_eq!(a.shape(), b.shape());
     let scale = b.amax().max(1.0);
@@ -148,21 +140,25 @@ fn assert_close(a: &DMatrix<f64>, b: &DMatrix<f64>) {
 
 /// The parallel products agree with nalgebra-sparse's serial ones, for both
 /// storage orders, rectangular shapes, duplicate entries and empty rows, and
-/// for a matrix large enough to split across threads.
+/// for a matrix large enough to split across threads, at widths below and
+/// above a column block.
 #[test]
 fn parallel_sparse_products_match_the_serial_ones() {
     for (nr, nc, per_row) in [(7, 5, 2), (300, 170, 4), (5000, 3000, 9)] {
         let t = sparse_triplets(nr, nc, per_row, (nr * nc) as u64);
-        let csr = CsrMatrix::from(&coo(nr, nc, &t));
-        let csc = CscMatrix::from(&coo(nr, nc, &t));
-        let b = DMatrix::<f64>::rnorm_seeded(nc, 6, 3);
-        let bt = DMatrix::<f64>::rnorm_seeded(nr, 6, 4);
-        let want = &csr * &b;
-        let want_t = csr.transpose() * &bt;
-        for op in [SparseOp::from_csr(&csr), SparseOp::from_csc(&csc)] {
-            assert_close(&op.matmul(&b), &want);
-            assert_close(&op.transpose_matmul(&bt), &want_t);
-            assert_eq!((op.num_rows(), op.num_columns()), (nr, nc));
+        let csr = CsrMatrix::from_nonzero_triplets(nr, nc, &t).unwrap();
+        let csc = CscMatrix::from_nonzero_triplets(nr, nc, &t).unwrap();
+        // Narrower than a column block, and blocks plus a remainder.
+        for width in [6, 19] {
+            let b = DMatrix::<f64>::rnorm_seeded(nc, width, 3);
+            let bt = DMatrix::<f64>::rnorm_seeded(nr, width, 4);
+            let want = &csr * &b;
+            let want_t = csr.transpose() * &bt;
+            for op in [SparseOp::from_csr(&csr), SparseOp::from_csc(&csc)] {
+                assert_close(&op.matmul(&b), &want);
+                assert_close(&op.transpose_matmul(&bt), &want_t);
+                assert_eq!((op.num_rows(), op.num_columns()), (nr, nc));
+            }
         }
     }
 }
@@ -173,8 +169,8 @@ fn parallel_sparse_products_match_the_serial_ones() {
 fn sparse_rsvd_matches_dense_rsvd() {
     let (nr, nc) = (400, 250);
     let t = sparse_triplets(nr, nc, 6, 11);
-    let csr = CsrMatrix::from(&coo(nr, nc, &t));
-    let csc = CscMatrix::from(&coo(nr, nc, &t));
+    let csr = CsrMatrix::from_nonzero_triplets(nr, nc, &t).unwrap();
+    let csc = CscMatrix::from_nonzero_triplets(nr, nc, &t).unwrap();
     let dense = DMatrix::from(&csr);
     let args = RsvdArgs {
         power_iters: 8,

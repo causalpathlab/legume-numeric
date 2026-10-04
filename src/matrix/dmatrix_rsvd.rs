@@ -1,6 +1,8 @@
 use crate::matrix::traits::*;
 use nalgebra::{DMatrix, DVector};
 use nalgebra_sparse::{csc::CscMatrix, csr::CsrMatrix};
+use rayon::prelude::*;
+use std::borrow::Cow;
 
 /// Fixed start-vector seed for the randomized-SVD subspace iteration. The
 /// iteration converges onto the dominant subspace, so pinning the start makes
@@ -45,40 +47,92 @@ where
     }
 }
 
-impl<T> IntoDense<DMatrix<T>> for CscMatrix<T>
+/// A sparse matrix held in both orientations for the subspace iteration,
+/// which multiplies by `X` and by `Xᵀ` in turn. Compressed rows of `X` give
+/// `X · B` and compressed columns, the rows of `Xᵀ`, give `Xᵀ · B`, each
+/// row-parallel with no transpose per product. The orientation the caller
+/// does not hold is built once.
+struct SparseOp<'a, T: nalgebra::Scalar> {
+    csr: Cow<'a, CsrMatrix<T>>,
+    csc: Cow<'a, CscMatrix<T>>,
+}
+
+impl<'a, T> SparseOp<'a, T>
 where
-    T: nalgebra::RealField + num_traits::Float + Copy,
+    T: nalgebra::RealField + Copy,
 {
-    fn matmul(&self, other: &DMatrix<T>) -> DMatrix<T> {
-        self * other
+    fn from_csr(x: &'a CsrMatrix<T>) -> Self {
+        Self {
+            csr: Cow::Borrowed(x),
+            csc: Cow::Owned(CscMatrix::from(x)),
+        }
     }
-    fn transpose_matmul(&self, other: &DMatrix<T>) -> DMatrix<T> {
-        self.transpose() * other
-    }
-    fn num_rows(&self) -> usize {
-        self.nrows()
-    }
-    fn num_columns(&self) -> usize {
-        self.ncols()
+
+    fn from_csc(x: &'a CscMatrix<T>) -> Self {
+        Self {
+            csr: Cow::Owned(CsrMatrix::from(x)),
+            csc: Cow::Borrowed(x),
+        }
     }
 }
 
-impl<T> IntoDense<DMatrix<T>> for CsrMatrix<T>
+impl<T> IntoDense<DMatrix<T>> for SparseOp<'_, T>
 where
     T: nalgebra::RealField + num_traits::Float + Copy,
 {
     fn matmul(&self, other: &DMatrix<T>) -> DMatrix<T> {
-        self * other
+        let x = &*self.csr;
+        rows_times_dense(x.row_offsets(), x.col_indices(), x.values(), other)
     }
     fn transpose_matmul(&self, other: &DMatrix<T>) -> DMatrix<T> {
-        self.transpose() * other
+        let x = &*self.csc;
+        rows_times_dense(x.col_offsets(), x.row_indices(), x.values(), other)
     }
     fn num_rows(&self) -> usize {
-        self.nrows()
+        self.csr.nrows()
     }
     fn num_columns(&self) -> usize {
-        self.ncols()
+        self.csr.ncols()
     }
+}
+
+/// Rows below which a thread is not worth splitting off.
+const MIN_ROWS_PER_TASK: usize = 256;
+
+/// `S · B` for `S` given by compressed rows (`offsets`, `indices`, `values`),
+/// one row of the product per task. `B` is read through its transpose, so a
+/// row of `B` is contiguous; each output row sums its entries in stored
+/// order, so the result does not depend on the thread count.
+fn rows_times_dense<T>(
+    offsets: &[usize],
+    indices: &[usize],
+    values: &[T],
+    b: &DMatrix<T>,
+) -> DMatrix<T>
+where
+    T: nalgebra::RealField + Copy,
+{
+    let m = offsets.len() - 1;
+    let c = b.ncols();
+    if c == 0 {
+        return DMatrix::zeros(m, 0);
+    }
+    let bt = b.transpose();
+    let bt = bt.as_slice();
+    let mut out = vec![T::zero(); m * c];
+    out.par_chunks_mut(c)
+        .enumerate()
+        .with_min_len(MIN_ROWS_PER_TASK)
+        .for_each(|(i, row)| {
+            for p in offsets[i]..offsets[i + 1] {
+                let v = values[p];
+                let src = &bt[indices[p] * c..(indices[p] + 1) * c];
+                for (o, &s) in row.iter_mut().zip(src) {
+                    *o += v * s;
+                }
+            }
+        });
+    DMatrix::from_row_slice(m, c, &out)
 }
 
 fn _subspace_iteration<T, D>(
@@ -201,7 +255,7 @@ where
         max_rank: usize,
         args: &RsvdArgs,
     ) -> anyhow::Result<(Self::OutMat, Self::DVec, Self::OutMat)> {
-        _randomized_svd(self, max_rank, args)
+        _randomized_svd(&SparseOp::from_csc(self), max_rank, args)
     }
 }
 
@@ -219,7 +273,7 @@ where
         max_rank: usize,
         args: &RsvdArgs,
     ) -> anyhow::Result<(Self::OutMat, Self::DVec, Self::OutMat)> {
-        _randomized_svd(self, max_rank, args)
+        _randomized_svd(&SparseOp::from_csr(self), max_rank, args)
     }
 }
 

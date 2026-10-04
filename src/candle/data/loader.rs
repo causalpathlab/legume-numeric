@@ -228,6 +228,22 @@ impl InMemoryData {
         Ok(())
     }
 
+    /// Rows `idx` of the device-resident input and its null, for a caller
+    /// that needs particular samples rather than a shuffled minibatch.
+    pub fn device_rows(&self, idx: &[u32]) -> anyhow::Result<(Tensor, Option<Tensor>)> {
+        let input = self
+            .device_input
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("call from_device before device_rows"))?;
+        let idx = Tensor::from_slice(idx, idx.len(), input.device())?;
+        let null = self
+            .device_input_null
+            .as_ref()
+            .map(|t| t.index_select(&idx, 0))
+            .transpose()?;
+        Ok((input.index_select(&idx, 0)?, null))
+    }
+
     /// Retrieve a pre-computed minibatch from the device-resident cache.
     /// Panics if `shuffle_minibatch_on_device` was not called.
     pub fn minibatch_cached(&self, batch_idx: usize) -> &MinibatchData {

@@ -1,7 +1,8 @@
 //! Dense VAE trainer for topic models (`EncoderModuleT` + `DecoderModuleT`).
 //!
 //! Two entry points:
-//! - [`train_mixed`]: shared encoder + one decoder per cascade level.
+//! - [`train_mixed`]: shared encoder + one decoder per cascade level;
+//!   [`train_mixed_with_pairs`] adds the peer-pair penalty ([`super::pairs`]).
 //! - [`train_mixed_multi_decoder`]: shared encoder + multiple weighted
 //!   decoders per level (via [`DynDecoderModuleT`]).
 //!
@@ -9,6 +10,7 @@
 //! all three are borrowed so a single matrix can back both input and
 //! target without cloning.
 
+use super::pairs::{latent_distance, pair_batch, pair_hinge, PairPenalty};
 use super::{clip_grads_and_step, smooth_topics, LevelLossHook, TrainScores};
 use crate::candle::data::indexed::labeled_bar;
 use crate::candle::data::loader::{DataLoader, InMemoryArgs, InMemoryData};
@@ -77,6 +79,23 @@ pub fn train_mixed<Enc, Dec>(
     encoder: &mut Enc,
     decoders: &[Dec],
     config: &TrainConfig,
+) -> anyhow::Result<TrainScores>
+where
+    Enc: EncoderModuleT,
+    Dec: DecoderModuleT,
+{
+    train_mixed_with_pairs(level_data, encoder, decoders, config, None)
+}
+
+/// [`train_mixed`] plus the peer-pair penalty: each minibatch at a level with
+/// pairs also encodes the next `batch` of them (rows of that level's input)
+/// and adds `λ · hinge` to the loss before backward.
+pub fn train_mixed_with_pairs<Enc, Dec>(
+    level_data: &[LevelData],
+    encoder: &mut Enc,
+    decoders: &[Dec],
+    config: &TrainConfig,
+    pairs: Option<&PairPenalty>,
 ) -> anyhow::Result<TrainScores>
 where
     Enc: EncoderModuleT,
@@ -164,6 +183,13 @@ where
                 let loss = (&kl - &llik)?.mean_all()?;
                 let loss = match config.loss_hook {
                     Some(hook) => hook(loss, level)?,
+                    None => loss,
+                };
+                let loss = match pairs {
+                    Some(p) => {
+                        let step = epoch * loader.num_minibatch() + b;
+                        add_pair_penalty(loss, &*encoder, loader, p, level, step)?
+                    }
                     None => loss,
                 };
                 clip_grads_and_step(&mut adam, &loss, f64::from(config.grad_clip))?;
@@ -350,4 +376,36 @@ pub fn train_mixed_multi_decoder<Enc: EncoderModuleT>(
         llik: llik_trace,
         kl: kl_trace,
     })
+}
+
+/// Add `λ · hinge` over the next pairs of `level` to `loss`; a level without
+/// pairs, or a penalty with no weight, leaves it as it is.
+fn add_pair_penalty<Enc: EncoderModuleT>(
+    loss: Tensor,
+    encoder: &Enc,
+    loader: &InMemoryData,
+    p: &PairPenalty,
+    level: usize,
+    step: usize,
+) -> anyhow::Result<Tensor> {
+    let Some(Some(lp)) = p.per_level.get(level) else {
+        return Ok(loss);
+    };
+    let take = pair_batch(lp.len(), p.batch, step);
+    if take.is_empty() || p.lambda <= 0.0 {
+        return Ok(loss);
+    }
+    let a: Vec<u32> = take.iter().map(|&i| lp.a[i]).collect();
+    let b: Vec<u32> = take.iter().map(|&i| lp.b[i]).collect();
+    let w: Vec<f32> = take.iter().map(|&i| lp.weight[i]).collect();
+    // Both ends in one forward pass: batch-normalised encoders see at least
+    // two rows, and both ends of a pair share one normalisation.
+    let n = a.len();
+    let both: Vec<u32> = a.into_iter().chain(b).collect();
+    let (x, null) = loader.device_rows(&both)?;
+    let (z, _) = encoder.forward_t(&x, null.as_ref(), true)?;
+    let d = latent_distance(&z.narrow(0, 0, n)?, &z.narrow(0, n, n)?, p.metric)?;
+    let w = Tensor::from_vec(w, take.len(), d.device())?;
+    let penalty = (pair_hinge(&d, &w, p.margin)? * f64::from(p.lambda))?;
+    Ok((loss + penalty)?)
 }

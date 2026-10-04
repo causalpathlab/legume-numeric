@@ -37,8 +37,9 @@
 //!
 //! When every point is itself a query — the all-pairs neighbours of one set —
 //! neither backend fits: an index is built once and amortised over nothing, and
-//! a scan per query is scalar `O(n²·d)`. [`all_pairs::knn_rows_l2`] does that
-//! case exactly, as blocked GEMMs.
+//! a scan per query is scalar `O(n²·d)`. [`knn_rows`] does that case: exactly,
+//! as blocked GEMMs ([`all_pairs::knn_rows_l2`]), up to [`ALL_PAIRS_THRESHOLD`]
+//! rows, and by the inverted-file search ([`ivf::knn_rows_ivf`]) beyond.
 
 use rustc_hash::FxHashMap as HashMap;
 use std::fmt::{Debug, Display};
@@ -51,6 +52,7 @@ mod backend;
 mod exact;
 pub mod ivf;
 pub mod metric;
+mod rows;
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -58,6 +60,7 @@ pub(crate) mod tests;
 use backend::{build_column_dict, Backend, EF_SEARCH};
 pub(crate) use backend::{EXACT_THRESHOLD, KNN_SEED};
 pub use metric::l2_simd;
+pub use rows::{knn_rows, ALL_PAIRS_THRESHOLD};
 
 /// A dictionary of named columns backed by a k-nearest-neighbour index.
 ///

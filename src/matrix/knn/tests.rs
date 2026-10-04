@@ -157,3 +157,12 @@ fn query_by_slice_matches_exact() {
     assert_eq!(got, truth);
     assert!(dists.windows(2).all(|w| w[0] <= w[1]));
 }
+
+#[test]
+fn knn_rows_is_the_exact_search_below_the_threshold() {
+    use crate::matrix::knn::all_pairs::knn_rows_l2;
+    use crate::matrix::knn::knn_rows;
+    use crate::matrix::traits::SampleOps;
+    let x = nalgebra::DMatrix::<f32>::rnorm_seeded(300, 8, 11);
+    assert_eq!(knn_rows(&x, 10), knn_rows_l2(&x, 10));
+}

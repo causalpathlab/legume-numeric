@@ -526,3 +526,38 @@ fn encoder_trainable_vars_skip_running_stats() {
     let c = config(&dev, &stop, 5);
     assert!(revise_encoder(&[(&x, None, &x)], &m.enc, &m.varmap, "nope", &pairs, &c).is_err());
 }
+
+/// The hinge is the whole objective: a weight it gives no gradient stays as
+/// it is, with no weight decay pulling it toward zero. A feature that is zero
+/// in every row reaches the latent through `ln(1 + 0) = 0`, so its column of
+/// the encoder's weight has a zero gradient throughout.
+#[test]
+fn revise_moves_only_what_the_hinge_moves() {
+    let (d, k) = (9, 2);
+    let base = two_programs(24, d - 1);
+    let x =
+        nalgebra::DMatrix::<f32>::from_fn(24, d, |i, j| if j < d - 1 { base[(i, j)] } else { 0.0 });
+    let m = model(d, k, false);
+    let column = |m: &Model| -> Vec<u32> {
+        let data = m.varmap.data().lock().unwrap();
+        let w = v(&data["enc.weight"].flatten_all().unwrap());
+        (0..k).map(|r| w[r * d + d - 1].to_bits()).collect()
+    };
+    let before = column(&m);
+    let pairs = [LevelPairs {
+        pairs: vec![(0, 1, 1.0)],
+        margin: 1e6,
+    }];
+    let (dev, stop) = (Device::Cpu, AtomicBool::new(false));
+    let trace = revise_encoder(
+        &[(&x, None, &x)],
+        &m.enc,
+        &m.varmap,
+        "enc",
+        &pairs,
+        &config(&dev, &stop, 20),
+    )
+    .unwrap();
+    assert!(trace.steps > 0);
+    assert_eq!(column(&m), before);
+}

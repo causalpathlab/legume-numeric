@@ -15,7 +15,7 @@ use crate::candle::convert::to_1d;
 use crate::candle::data::loader::{InMemoryArgs, InMemoryData};
 use crate::candle::traits::model::EncoderModuleT;
 use candle_core::{Device, Result, Tensor, Var};
-use candle_nn::{AdamW, VarMap};
+use candle_nn::{AdamW, Optimizer, ParamsAdamW, VarMap};
 use log::{debug, info};
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
@@ -277,7 +277,14 @@ pub fn revise_encoder<Enc: EncoderModuleT>(
         .map(|(lp, _)| lp.pairs.len().div_ceil(config.batch))
         .max()
         .unwrap_or(0);
-    let mut adam = AdamW::new_lr(vars, f64::from(config.learning_rate))?;
+    // No weight decay: AdamW's default would shrink every encoder weight with
+    // a gradient, zero or not, a pull toward zero the hinge does not ask for.
+    let params = ParamsAdamW {
+        lr: f64::from(config.learning_rate),
+        weight_decay: 0.0,
+        ..Default::default()
+    };
+    let mut adam = AdamW::new(vars, params)?;
 
     for epoch in 0..config.max_epochs {
         for _ in 0..steps_per_epoch {

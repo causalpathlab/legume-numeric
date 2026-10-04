@@ -1,5 +1,5 @@
 use super::*;
-use crate::matrix::traits::{RandomizedAlgs, RsvdArgs, SampleOps};
+use crate::matrix::traits::{MatTriplets, RandomizedAlgs, RsvdArgs, SampleOps};
 
 /// A planted rank-one spike over unit noise, well above the noise edge:
 /// the randomised SVD must recover its singular value and direction.
@@ -114,4 +114,74 @@ fn rsvd_with_caps_an_oversized_oversample() {
 #[test]
 fn rsvd_of_an_empty_matrix_is_an_error() {
     assert!(DMatrix::<f64>::zeros(0, 5).rsvd(3).is_err());
+}
+
+/// A seeded sparse matrix with empty rows and columns, as a `(row, col,
+/// value)` list.
+fn sparse_triplets(nr: usize, nc: usize, per_row: usize, seed: u64) -> Vec<(usize, usize, f64)> {
+    use rand::{RngExt, SeedableRng};
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
+    let mut out = Vec::new();
+    // Every third row stays empty.
+    for i in (0..nr).filter(|i| i % 3 != 1) {
+        for _ in 0..per_row {
+            out.push((i, rng.random_range(0..nc), rng.random_range(-1.0..1.0)));
+        }
+    }
+    out
+}
+
+fn assert_close(a: &DMatrix<f64>, b: &DMatrix<f64>) {
+    assert_eq!(a.shape(), b.shape());
+    let scale = b.amax().max(1.0);
+    let err = (a - b).amax();
+    assert!(err <= 1e-12 * scale, "max abs difference {err}");
+}
+
+/// The parallel products agree with nalgebra-sparse's serial ones, for both
+/// storage orders, rectangular shapes, duplicate entries and empty rows, and
+/// for a matrix large enough to split across threads, at widths below and
+/// above a column block.
+#[test]
+fn parallel_sparse_products_match_the_serial_ones() {
+    for (nr, nc, per_row) in [(7, 5, 2), (300, 170, 4), (5000, 3000, 9)] {
+        let t = sparse_triplets(nr, nc, per_row, (nr * nc) as u64);
+        let csr = CsrMatrix::from_nonzero_triplets(nr, nc, &t).unwrap();
+        let csc = CscMatrix::from_nonzero_triplets(nr, nc, &t).unwrap();
+        // Narrower than a column block, and blocks plus a remainder.
+        for width in [6, 19] {
+            let b = DMatrix::<f64>::rnorm_seeded(nc, width, 3);
+            let bt = DMatrix::<f64>::rnorm_seeded(nr, width, 4);
+            let want = &csr * &b;
+            let want_t = csr.transpose() * &bt;
+            for op in [SparseOp::from_csr(&csr), SparseOp::from_csc(&csc)] {
+                assert_close(&op.matmul(&b), &want);
+                assert_close(&op.transpose_matmul(&bt), &want_t);
+                assert_eq!((op.num_rows(), op.num_columns()), (nr, nc));
+            }
+        }
+    }
+}
+
+/// The sparse randomised SVD gives the dense one's answer, in either storage
+/// order.
+#[test]
+fn sparse_rsvd_matches_dense_rsvd() {
+    let (nr, nc) = (400, 250);
+    let t = sparse_triplets(nr, nc, 6, 11);
+    let csr = CsrMatrix::from_nonzero_triplets(nr, nc, &t).unwrap();
+    let csc = CscMatrix::from_nonzero_triplets(nr, nc, &t).unwrap();
+    let dense = DMatrix::from(&csr);
+    let args = RsvdArgs {
+        power_iters: 8,
+        oversample: 10,
+    };
+    let (_, s, _) = dense.rsvd_with(5, &args).unwrap();
+    for (_, s_sparse, _) in [
+        csr.rsvd_with(5, &args).unwrap(),
+        csc.rsvd_with(5, &args).unwrap(),
+    ] {
+        let err = (&s_sparse - &s).amax();
+        assert!(err <= 1e-9 * s[0], "{s_sparse} vs {s}");
+    }
 }

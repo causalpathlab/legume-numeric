@@ -2,9 +2,10 @@
 //! apart here. `senna critique` writes them, one set per cascade level, as row
 //! indices into that level's training data.
 //!
-//! The penalty is `λ · Σ w·max(0, m − d(z_a, z_b))² / Σ w`: zero once a pair is
-//! at least the margin apart, so it moves only pairs that are still too close,
-//! and leaves the rest of the latent to the likelihood. `d` is the distance the
+//! The penalty is `λ · Σ w·max(0, 1 − d(z_a, z_b)/m)² / Σ w`: zero once a pair
+//! is at least the margin apart, so it moves only pairs that are still too
+//! close, and leaves the rest of the latent to the likelihood. The shortfall is
+//! a fraction of the margin, so one λ pulls alike in every metric and level. `d` is the distance the
 //! critique ranked in: Hellinger on θ for an encoder that emits log θ,
 //! Euclidean on z for a Gaussian one.
 
@@ -119,9 +120,14 @@ pub fn quantile_distance(z: &Tensor, metric: PairMetric, q: f32) -> anyhow::Resu
     Ok(v)
 }
 
-/// `Σ w·max(0, margin − d)² / Σ w`.
+/// `Σ w·max(0, 1 − d/margin)² / Σ w`: the shortfall as a fraction of the
+/// margin, so λ means the same in any metric and at any level. A zero margin
+/// asks nothing.
 pub fn pair_hinge(d: &Tensor, w: &Tensor, margin: f32) -> Result<Tensor> {
-    let gap = d.affine(-1.0, f64::from(margin))?.relu()?;
+    if margin <= 0.0 {
+        return d.zeros_like()?.sum_all();
+    }
+    let gap = d.affine(-1.0 / f64::from(margin), 1.0)?.relu()?;
     let num = (gap.sqr()? * w)?.sum_all()?;
     let den = w.sum_all()?;
     num / den

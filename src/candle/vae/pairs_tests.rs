@@ -68,14 +68,30 @@ fn quantile_distance_samples_large_levels() {
     assert!((a - 0.134).abs() < 0.005, "{a}");
 }
 
-/// Weighted mean of max(0, margin − d)²: pairs already apart cost nothing.
+/// Weighted mean of max(0, 1 − d/margin)²: pairs already apart cost nothing,
+/// and the shortfall counts as a fraction of the margin, so one λ pulls alike
+/// in a Hellinger latent (margins under 1) and a Euclidean one (margins of
+/// several units), and across levels.
 #[test]
 fn hinge_charges_only_pairs_inside_the_margin() {
-    let d = Tensor::new(&[0.0f32, 0.5, 2.0], &Device::Cpu).unwrap();
-    let w = Tensor::new(&[1.0f32, 2.0, 1.0], &Device::Cpu).unwrap();
-    let h = pair_hinge(&d, &w, 1.0).unwrap().to_scalar::<f32>().unwrap();
+    let hinge = |d: [f32; 3], margin: f32| {
+        let d = Tensor::new(&d, &Device::Cpu).unwrap();
+        let w = Tensor::new(&[1.0f32, 2.0, 1.0], &Device::Cpu).unwrap();
+        pair_hinge(&d, &w, margin)
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap()
+    };
     // (1·1² + 2·0.5² + 1·0) / (1 + 2 + 1)
+    let h = hinge([0.0, 0.5, 2.0], 1.0);
     assert!((h - 1.5 / 4.0).abs() < 1e-6, "{h}");
+    let scaled = hinge([0.0, 2.0, 8.0], 4.0);
+    assert!((scaled - h).abs() < 1e-6, "scale-free: {scaled} vs {h}");
+    assert_eq!(
+        hinge([0.0, 0.5, 2.0], 0.0),
+        0.0,
+        "a zero margin asks nothing"
+    );
 }
 
 /// Each minibatch takes the next `batch` pairs, wrapping around, so every
@@ -250,7 +266,7 @@ fn training_with_pairs_separates_a_labelled_pair() {
         }];
         let penalty = PairPenalty {
             per_level: &pairs,
-            lambda: 50.0,
+            lambda: 200.0,
             metric: PairMetric::Euclidean,
             batch: 1,
         };

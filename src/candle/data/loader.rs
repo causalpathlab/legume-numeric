@@ -244,6 +244,15 @@ impl InMemoryData {
         Ok((input.index_select(&idx, 0)?, null))
     }
 
+    /// Rows `idx` of the device-resident output, if there is one.
+    pub fn device_output_rows(&self, idx: &[u32]) -> anyhow::Result<Option<Tensor>> {
+        let Some(output) = self.device_output.as_ref() else {
+            return Ok(None);
+        };
+        let idx = crate::candle::convert::to_1d(idx, output.device())?;
+        Ok(Some(output.index_select(&idx, 0)?))
+    }
+
     /// Retrieve a pre-computed minibatch from the device-resident cache.
     /// Panics if `shuffle_minibatch_on_device` was not called.
     pub fn minibatch_cached(&self, batch_idx: usize) -> &MinibatchData {

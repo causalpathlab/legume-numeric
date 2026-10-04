@@ -170,11 +170,13 @@ fn the_gradient_is_finite_at_zero_distance() {
     }
 }
 
-/// A transparent encoder for the end-to-end test: a learned linear map of
-/// `ln(1 + x)`, no batch norm and no KL, so training and evaluation agree and
-/// only the penalty can pull a pair apart.
+/// A transparent encoder for the revise tests: a learned linear map of
+/// `ln(1 + x)` and a BatchNorm, no KL, so only the hinge moves it. The
+/// BatchNorm starts at mean 0 and variance 1, nearly the identity, and its
+/// running statistics are Vars an evaluation-mode pass reads.
 struct LinearEncoder {
     lin: candle_nn::Linear,
+    bn: crate::candle::nn::batch_norm::BatchNorm,
     k: usize,
     /// In training mode, emit the latent with no gradient: what the encoder
     /// learns then comes from passes in evaluation mode only.
@@ -188,8 +190,9 @@ impl crate::candle::traits::model::EncoderModuleT for LinearEncoder {
         _x0_nd: Option<&Tensor>,
         train: bool,
     ) -> candle_core::Result<(Tensor, Tensor)> {
-        use candle_nn::Module;
+        use candle_nn::{Module, ModuleT};
         let z = self.lin.forward(&(x_nd + 1.0)?.log()?)?;
+        let z = self.bn.forward_t(&z, train)?;
         let z = if train && self.blind_in_training {
             z.detach()
         } else {
@@ -204,151 +207,322 @@ impl crate::candle::traits::model::EncoderModuleT for LinearEncoder {
     }
 }
 
-/// End to end: two near-identical samples sit together in a trained latent;
-/// labelled as a pair to push apart, training separates them.
-#[test]
-fn training_with_pairs_separates_a_labelled_pair() {
-    use super::PairPenalty;
-    use crate::candle::decoder::gaussian_nb::GaussianNbDecoder;
-    use crate::candle::traits::model::EncoderModuleT;
-    use crate::candle::vae::topic::{train_mixed_with_pairs, TrainConfig};
-    use candle_core::DType;
-    use candle_nn::{VarBuilder, VarMap};
-    use nalgebra::DMatrix;
-    use std::sync::atomic::AtomicBool;
-
-    let (n, d, k) = (24usize, 8usize, 2usize);
-    // Two programs. Row 1 is row 0 with one gene shifted: a small change of
-    // composition.
-    let x = DMatrix::<f32>::from_fn(n, d, |i, j| {
+/// Two programs over `d` features; row 1 is row 0 with one feature shifted, a
+/// small change of composition, so rows 0 and 1 start close in the latent.
+fn two_programs(n: usize, d: usize) -> nalgebra::DMatrix<f32> {
+    nalgebra::DMatrix::<f32>::from_fn(n, d, |i, j| {
         let r = if i == 1 { 0 } else { i };
         let program = if r % 2 == 0 { j < d / 2 } else { j >= d / 2 };
         let base = if program { 20.0 } else { 2.0 };
         let shift = if i == 1 && j == 0 { 4.0 } else { 0.0 };
         base + (r * 7 + j * 3) as f32 % 3.0 + shift
-    });
-    let train = |with_pairs: bool| -> f32 {
-        let dev = Device::Cpu;
-        let varmap = VarMap::new();
-        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &dev);
-        // A fixed starting point: candle cannot seed its CPU generator, and a
-        // random one makes the run-to-run spread larger than the effect.
-        let w0 = vb
-            .pp("enc")
-            .get_with_hints((k, d), "weight", candle_nn::Init::Const(0.1))
-            .unwrap();
-        let b0 = vb
-            .pp("enc")
-            .get_with_hints(k, "bias", candle_nn::Init::Const(0.0))
-            .unwrap();
-        let mut enc = LinearEncoder {
-            lin: candle_nn::Linear::new(w0, Some(b0)),
-            k,
-            blind_in_training: false,
-        };
-        let dec = GaussianNbDecoder::new(d, k, vb.pp("dec")).unwrap();
-        let stop = AtomicBool::new(false);
-        let config = TrainConfig {
-            parameters: &varmap,
-            dev: &dev,
-            epochs: 200,
-            gpu_mem_fraction: None,
-            minibatch_size: 8,
-            learning_rate: 0.01,
-            topic_smoothing: 0.0,
-            grad_clip: 0.0,
-            stop: &stop,
-            loss_hook: None,
-        };
-        let pairs = [LevelPairs {
-            pairs: vec![(0, 1, 1.0)],
-            margin: 2.0,
-        }];
-        let penalty = PairPenalty {
-            per_level: &pairs,
-            lambda: 200.0,
-            metric: PairMetric::Euclidean,
-            batch: 1,
-        };
-        train_mixed_with_pairs(
-            &[(&x, None, &x)],
-            &mut enc,
-            &[dec],
-            &config,
-            with_pairs.then_some(&penalty),
-        )
-        .unwrap();
-        let rows = |i: usize| {
-            let r: Vec<f32> = x.row(i).iter().copied().collect();
-            Tensor::from_vec(r, (1, d), &dev).unwrap()
-        };
-        let (za, _) = enc.forward_t(&rows(0), None, false).unwrap();
-        let (zb, _) = enc.forward_t(&rows(1), None, false).unwrap();
-        v(&latent_distance(&za, &zb, PairMetric::Euclidean).unwrap())[0]
-    };
-    let without = train(false);
-    let with = train(true);
-    assert!(
-        with > 0.3 && with > 3.0 * without,
-        "with pairs {with}, without {without}"
-    );
+    })
 }
 
-/// The penalty measures pairs as the critique sees them, by the encoder's
-/// mean in evaluation mode. A sampled training-mode latent would let an
-/// encoder spread a pair by inflating its noise rather than by moving it.
-/// Here training mode carries no gradient, so only that pass can move the
-/// encoder.
-#[test]
-fn the_penalty_reads_the_evaluation_mode_latent() {
-    use super::PairPenalty;
-    use crate::candle::decoder::gaussian_nb::GaussianNbDecoder;
-    use crate::candle::vae::topic::{train_mixed_with_pairs, TrainConfig};
-    use candle_core::DType;
-    use candle_nn::{VarBuilder, VarMap};
-    use nalgebra::DMatrix;
-    use std::sync::atomic::AtomicBool;
+/// An encoder under `enc` and a decoder under `dec` in one VarMap, the way a
+/// trained model holds them, with a fixed starting point: candle cannot seed
+/// its CPU generator.
+struct Model {
+    varmap: candle_nn::VarMap,
+    enc: LinearEncoder,
+    _dec: crate::candle::decoder::gaussian_nb::GaussianNbDecoder,
+}
 
-    let (n, d, k) = (8usize, 4usize, 2usize);
-    let x = DMatrix::<f32>::from_fn(n, d, |i, j| (1 + (i * 3 + j) % 5) as f32);
+fn model(d: usize, k: usize, blind_in_training: bool) -> Model {
+    use candle_core::DType;
+    use candle_nn::{Init, VarBuilder, VarMap};
     let dev = Device::Cpu;
     let varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &dev);
-    let w0 = vb
+    let w = vb
         .pp("enc")
-        .get_with_hints((k, d), "weight", candle_nn::Init::Const(0.1))
+        .get_with_hints((k, d), "weight", Init::Const(0.1))
         .unwrap();
-    let mut enc = LinearEncoder {
-        lin: candle_nn::Linear::new(w0.clone(), None),
+    let b = vb
+        .pp("enc")
+        .get_with_hints(k, "bias", Init::Const(0.0))
+        .unwrap();
+    let bn =
+        crate::candle::nn::batch_norm::batch_norm(k, Default::default(), &varmap, vb.pp("enc.bn"))
+            .unwrap();
+    let enc = LinearEncoder {
+        lin: candle_nn::Linear::new(w, Some(b)),
+        bn,
         k,
-        blind_in_training: true,
+        blind_in_training,
     };
-    let before = v(&w0.flatten_all().unwrap());
-    let dec = GaussianNbDecoder::new(d, k, vb.pp("dec")).unwrap();
-    let stop = AtomicBool::new(false);
-    let config = TrainConfig {
-        parameters: &varmap,
-        dev: &dev,
-        epochs: 2,
-        gpu_mem_fraction: None,
-        minibatch_size: 4,
-        learning_rate: 0.01,
+    let dec =
+        crate::candle::decoder::gaussian_nb::GaussianNbDecoder::new(d, k, vb.pp("dec")).unwrap();
+    Model {
+        varmap,
+        enc,
+        _dec: dec,
+    }
+}
+
+/// Every variable's values, by name, to compare before and after a revise.
+fn snapshot(varmap: &candle_nn::VarMap, prefix: &str) -> Vec<(String, Vec<u32>)> {
+    let data = varmap.data().lock().unwrap();
+    let mut out: Vec<(String, Vec<u32>)> = data
+        .iter()
+        .filter(|(name, _)| name.starts_with(prefix))
+        .map(|(name, var)| {
+            let bits = v(&var.flatten_all().unwrap())
+                .into_iter()
+                .map(f32::to_bits)
+                .collect();
+            (name.clone(), bits)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+fn config<'a>(dev: &'a Device, stop: &'a AtomicBool, max_epochs: usize) -> ReviseConfig<'a> {
+    ReviseConfig {
+        dev,
+        metric: PairMetric::Euclidean,
         topic_smoothing: 0.0,
+        learning_rate: 0.05,
+        max_epochs,
+        batch: 4,
         grad_clip: 0.0,
-        stop: &stop,
-        loss_hook: None,
+        stop,
+        verbose: false,
+    }
+}
+
+fn distance(enc: &LinearEncoder, x: &nalgebra::DMatrix<f32>, a: usize, b: usize) -> f32 {
+    use crate::candle::traits::model::EncoderModuleT;
+    let row = |i: usize| {
+        let r: Vec<f32> = x.row(i).iter().copied().collect();
+        Tensor::from_vec(r, (1, x.ncols()), &Device::Cpu).unwrap()
     };
+    let (za, _) = enc.forward_t(&row(a), None, false).unwrap();
+    let (zb, _) = enc.forward_t(&row(b), None, false).unwrap();
+    v(&latent_distance(&za, &zb, PairMetric::Euclidean).unwrap())[0]
+}
+
+use super::{encoder_trainable_vars, revise_encoder, ReviseConfig};
+use std::sync::atomic::AtomicBool;
+
+/// A labelled pair that starts close is pushed to its margin, and the run
+/// stops there, before its budget: past the margin the hinge has no gradient.
+#[test]
+fn revise_pushes_a_labelled_pair_to_its_margin() {
+    let x = two_programs(24, 8);
+    let m = model(8, 2, false);
+    let margin = 2.0;
+    assert!(distance(&m.enc, &x, 0, 1) < margin);
+    let pairs = [LevelPairs {
+        pairs: vec![(0, 1, 1.0)],
+        margin,
+    }];
+    let (dev, stop) = (Device::Cpu, AtomicBool::new(false));
+    let trace = revise_encoder(
+        &[(&x, None, &x)],
+        &m.enc,
+        &m.varmap,
+        "enc",
+        &pairs,
+        &config(&dev, &stop, 5000),
+    )
+    .unwrap();
+    assert!(distance(&m.enc, &x, 0, 1) >= margin * 0.999);
+    let last = trace.hinge.len() - 1;
+    assert_eq!(trace.hinge[last], vec![0.0]);
+    assert_eq!(trace.satisfied[last], vec![1.0]);
+    assert!(trace.hinge[0][0] > 0.0 && trace.satisfied[0] == vec![0.0]);
+    assert!(last < 5000, "stopped once the hinge was zero");
+}
+
+/// The decoder and the BatchNorm running statistics are left out of the
+/// optimizer: bit-identical after a revise that moved the encoder.
+#[test]
+fn revise_leaves_the_decoder_and_running_stats_bit_identical() {
+    let x = two_programs(24, 8);
+    let m = model(8, 2, false);
+    let (dec0, enc0) = (snapshot(&m.varmap, "dec"), snapshot(&m.varmap, "enc"));
+    let stats0 = snapshot(&m.varmap, "enc.bn.running");
+    assert!(!dec0.is_empty());
+    assert_eq!(stats0.len(), 2);
+    let pairs = [LevelPairs {
+        pairs: vec![(0, 1, 1.0), (2, 4, 0.5)],
+        margin: 2.0,
+    }];
+    let (dev, stop) = (Device::Cpu, AtomicBool::new(false));
+    revise_encoder(
+        &[(&x, None, &x)],
+        &m.enc,
+        &m.varmap,
+        "enc",
+        &pairs,
+        &config(&dev, &stop, 50),
+    )
+    .unwrap();
+    assert_eq!(snapshot(&m.varmap, "dec"), dec0);
+    assert_eq!(snapshot(&m.varmap, "enc.bn.running"), stats0);
+    assert_ne!(snapshot(&m.varmap, "enc"), enc0, "the encoder moved");
+}
+
+/// Nothing to do changes nothing: no pairs, a level of pairs already past
+/// their margin, or a zero margin. The trace holds the starting state only.
+#[test]
+fn revise_with_nothing_to_do_changes_nothing() {
+    let x = two_programs(24, 8);
+    let m = model(8, 2, false);
+    let far = distance(&m.enc, &x, 0, 2);
+    let cases = [
+        vec![LevelPairs::default()],
+        vec![],
+        vec![LevelPairs {
+            pairs: vec![(0, 2, 1.0)],
+            margin: far * 0.5,
+        }],
+        vec![LevelPairs {
+            pairs: vec![(0, 1, 1.0)],
+            margin: 0.0,
+        }],
+    ];
+    let before = snapshot(&m.varmap, "");
+    let (dev, stop) = (Device::Cpu, AtomicBool::new(false));
+    for pairs in cases {
+        let trace = revise_encoder(
+            &[(&x, None, &x)],
+            &m.enc,
+            &m.varmap,
+            "enc",
+            &pairs,
+            &config(&dev, &stop, 100),
+        )
+        .unwrap();
+        assert_eq!(trace.steps, 0, "{pairs:?}");
+        assert_eq!(trace.hinge, vec![vec![0.0]], "{pairs:?}");
+        assert_eq!(trace.satisfied, vec![vec![1.0]], "{pairs:?}");
+        assert_eq!(snapshot(&m.varmap, ""), before, "{pairs:?}");
+    }
+}
+
+/// A margin out of reach runs the whole budget and no more: one trace row per
+/// epoch after the starting one, and as many steps as the epochs hold.
+#[test]
+fn revise_honours_the_epoch_budget() {
+    let x = two_programs(24, 8);
+    let m = model(8, 2, false);
+    // 6 pairs in batches of 4: two steps an epoch.
+    let pairs = [LevelPairs {
+        pairs: (0..6).map(|i| (i, i + 6, 1.0)).collect(),
+        margin: 1e6,
+    }];
+    let (dev, stop) = (Device::Cpu, AtomicBool::new(false));
+    let trace = revise_encoder(
+        &[(&x, None, &x)],
+        &m.enc,
+        &m.varmap,
+        "enc",
+        &pairs,
+        &config(&dev, &stop, 3),
+    )
+    .unwrap();
+    assert_eq!(trace.hinge.len(), 4);
+    assert_eq!(trace.satisfied.len(), 4);
+    assert_eq!(trace.steps, 6);
+    assert!(trace.hinge.iter().all(|h| h[0] > 0.0));
+}
+
+/// Levels are revised together, each against its own margin; a level without
+/// pairs reports a zero hinge and every pair satisfied.
+#[test]
+fn revise_traces_every_level() {
+    let x = two_programs(24, 8);
+    let coarse = two_programs(12, 8);
+    let m = model(8, 2, false);
+    let pairs = [
+        LevelPairs {
+            pairs: vec![(0, 1, 1.0)],
+            margin: 2.0,
+        },
+        LevelPairs::default(),
+    ];
+    let (dev, stop) = (Device::Cpu, AtomicBool::new(false));
+    let trace = revise_encoder(
+        &[(&x, None, &x), (&coarse, None, &coarse)],
+        &m.enc,
+        &m.varmap,
+        "enc",
+        &pairs,
+        &config(&dev, &stop, 5),
+    )
+    .unwrap();
+    assert!(trace.hinge.iter().all(|h| h.len() == 2 && h[1] == 0.0));
+    assert!(trace.satisfied.iter().all(|s| s[1] == 1.0));
+}
+
+/// The hinge measures pairs as the critique sees them, by the encoder's mean
+/// in evaluation mode. Here training mode carries no gradient, so only an
+/// evaluation-mode pass can move the encoder.
+#[test]
+fn revise_reads_the_evaluation_mode_latent() {
+    let x = two_programs(24, 8);
+    let m = model(8, 2, true);
+    let before = snapshot(&m.varmap, "enc");
     let pairs = [LevelPairs {
         pairs: vec![(0, 1, 1.0)],
         margin: 10.0,
     }];
-    let penalty = PairPenalty {
-        per_level: &pairs,
-        lambda: 1.0,
-        metric: PairMetric::Euclidean,
-        batch: 1,
+    let (dev, stop) = (Device::Cpu, AtomicBool::new(false));
+    revise_encoder(
+        &[(&x, None, &x)],
+        &m.enc,
+        &m.varmap,
+        "enc",
+        &pairs,
+        &config(&dev, &stop, 2),
+    )
+    .unwrap();
+    assert_ne!(snapshot(&m.varmap, "enc"), before);
+}
+
+/// Bad pairs, more pair levels than data levels, or a zero batch are refused
+/// before any step.
+#[test]
+fn revise_checks_its_inputs() {
+    let x = two_programs(24, 8);
+    let m = model(8, 2, false);
+    let (dev, stop) = (Device::Cpu, AtomicBool::new(false));
+    let run = |pairs: &[LevelPairs], batch: usize| {
+        let mut c = config(&dev, &stop, 5);
+        c.batch = batch;
+        revise_encoder(&[(&x, None, &x)], &m.enc, &m.varmap, "enc", pairs, &c)
     };
-    train_mixed_with_pairs(&[(&x, None, &x)], &mut enc, &[dec], &config, Some(&penalty)).unwrap();
-    let after = v(&w0.flatten_all().unwrap());
-    assert_ne!(before, after, "the penalty's pass reached the encoder");
+    let ok = LevelPairs {
+        pairs: vec![(0, 1, 1.0)],
+        margin: 1.0,
+    };
+    let out_of_range = LevelPairs {
+        pairs: vec![(0, 24, 1.0)],
+        margin: 1.0,
+    };
+    assert!(run(&[out_of_range], 4).is_err());
+    assert!(run(&[ok.clone(), ok.clone()], 4).is_err());
+    assert!(run(&[ok], 0).is_err());
+}
+
+/// The trainable set is the encoder's prefix less its running statistics; a
+/// prefix that matches nothing is refused by a revise.
+#[test]
+fn encoder_trainable_vars_skip_running_stats() {
+    let m = model(8, 2, false);
+    let under_enc = snapshot(&m.varmap, "enc").len();
+    // lin weight and bias, bn weight and bias
+    assert_eq!(under_enc, 6);
+    assert_eq!(encoder_trainable_vars(&m.varmap, "enc").len(), 4);
+    let x = two_programs(24, 8);
+    let pairs = [LevelPairs {
+        pairs: vec![(0, 1, 1.0)],
+        margin: 2.0,
+    }];
+    let (dev, stop) = (Device::Cpu, AtomicBool::new(false));
+    let c = config(&dev, &stop, 5);
+    assert!(revise_encoder(&[(&x, None, &x)], &m.enc, &m.varmap, "nope", &pairs, &c).is_err());
 }

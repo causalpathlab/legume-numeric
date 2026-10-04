@@ -1,19 +1,17 @@
 //! Dense VAE trainer for topic models (`EncoderModuleT` + `DecoderModuleT`).
 //!
-//! Three entry points:
+//! Two entry points:
 //! - [`train_mixed`]: shared encoder + one decoder per cascade level.
-//! - [`train_mixed_with_pairs`]: the same, plus the peer-pair penalty
-//!   ([`super::pairs`]).
 //! - [`train_mixed_multi_decoder`]: shared encoder + multiple weighted
 //!   decoders per level (via [`DynDecoderModuleT`]).
+//!
+//! [`level_llik`] scores a trained model without training it.
 //!
 //! Callers pre-build per-level `(input, batch, target)` `Mat` triples;
 //! all three are borrowed so a single matrix can back both input and
 //! target without cloning.
 
-use super::pairs::{check_pairs, latent_distance, pair_batch, pair_hinge, PairPenalty};
 use super::{clip_grads_and_step, smooth_topics, LevelLossHook, TrainScores};
-use crate::candle::convert::to_1d;
 use crate::candle::data::indexed::labeled_bar;
 use crate::candle::data::loader::{DataLoader, InMemoryArgs, InMemoryData};
 use crate::candle::decoder::dyn_decoder::DynDecoderModuleT;
@@ -27,8 +25,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 type Mat = DMatrix<f32>;
 
-/// Hyperparameter bundle passed by reference to [`train_mixed`],
-/// [`train_mixed_with_pairs`] and [`train_mixed_multi_decoder`].
+/// Hyperparameter bundle passed by reference to [`train_mixed`] and
+/// [`train_mixed_multi_decoder`].
 pub struct TrainConfig<'a> {
     pub parameters: &'a candle_nn::VarMap,
     pub dev: &'a Device,
@@ -86,23 +84,6 @@ where
     Enc: EncoderModuleT,
     Dec: DecoderModuleT,
 {
-    train_mixed_with_pairs(level_data, encoder, decoders, config, None)
-}
-
-/// [`train_mixed`] plus the peer-pair penalty: each minibatch at a level with
-/// pairs also encodes the next `batch` of them (rows of that level's input)
-/// and adds `λ · hinge` to the loss before backward.
-pub fn train_mixed_with_pairs<Enc, Dec>(
-    level_data: &[LevelData],
-    encoder: &mut Enc,
-    decoders: &[Dec],
-    config: &TrainConfig,
-    pairs: Option<&PairPenalty>,
-) -> anyhow::Result<TrainScores>
-where
-    Enc: EncoderModuleT,
-    Dec: DecoderModuleT,
-{
     let num_levels = level_data.len();
     let total_epochs = config.epochs;
 
@@ -126,17 +107,6 @@ where
 
     let mut llik_trace = Vec::with_capacity(total_epochs);
     let mut kl_trace = Vec::with_capacity(total_epochs);
-
-    // A penalty with no weight is no penalty; the rest is checked once here.
-    let pairs = pairs.filter(|p| p.lambda > 0.0);
-    if let Some(p) = pairs {
-        for (level, lp) in p.per_level.iter().enumerate() {
-            if let Some(&(mixed, _, _)) = level_data.get(level) {
-                check_pairs(lp, mixed.nrows())
-                    .map_err(|e| anyhow::anyhow!("level {level}: {e}"))?;
-            }
-        }
-    }
 
     let mut data_loaders = build_device_loaders(level_data, config.dev)?;
 
@@ -196,14 +166,6 @@ where
                 let loss = (&kl - &llik)?.mean_all()?;
                 let loss = match config.loss_hook {
                     Some(hook) => hook(loss, level)?,
-                    None => loss,
-                };
-                let loss = match pairs {
-                    Some(p) => {
-                        let step = epoch * loader.num_minibatch() + b;
-                        let smoothing = config.topic_smoothing;
-                        add_pair_penalty(loss, &*encoder, loader, p, level, step, smoothing)?
-                    }
                     None => loss,
                 };
                 clip_grads_and_step(&mut adam, &loss, f64::from(config.grad_clip))?;
@@ -392,40 +354,56 @@ pub fn train_mixed_multi_decoder<Enc: EncoderModuleT>(
     })
 }
 
-/// Add `λ · hinge` over the next pairs of `level` to `loss`; a level without
-/// pairs, or a penalty with no weight, leaves it as it is.
-fn add_pair_penalty<Enc: EncoderModuleT>(
-    loss: Tensor,
+/// Each level's mean per-sample log-likelihood: the reconstruction term
+/// [`train_mixed`] reports as llik, summed over a level's rows and divided by
+/// their number. The encoder runs in evaluation mode, the mean latent smoothed
+/// as in training, with no sampling and no optimizer, so a model can be scored
+/// before and after a change to it ([`super::pairs::revise_encoder`]).
+pub fn level_llik<Enc, Dec>(
+    level_data: &[LevelData],
     encoder: &Enc,
-    loader: &InMemoryData,
-    p: &PairPenalty,
-    level: usize,
-    step: usize,
+    decoders: &[Dec],
+    dev: &Device,
     topic_smoothing: f64,
-) -> anyhow::Result<Tensor> {
-    let Some(lp) = p.per_level.get(level) else {
-        return Ok(loss);
-    };
-    let take = pair_batch(lp.pairs.len(), p.batch, step);
-    if take.is_empty() {
-        return Ok(loss);
-    }
-    // Both ends in one forward pass, in evaluation mode: the mean latent the
-    // critique ranked, not a sample, which an encoder could spread by
-    // inflating its noise instead of moving the pair.
-    let n = take.len();
-    let both: Vec<u32> = take
+    minibatch_size: usize,
+) -> anyhow::Result<Vec<f32>>
+where
+    Enc: EncoderModuleT,
+    Dec: DecoderModuleT,
+{
+    anyhow::ensure!(minibatch_size > 0, "minibatch_size must be > 0");
+    anyhow::ensure!(
+        decoders.len() >= level_data.len(),
+        "{} decoders for {} levels",
+        decoders.len(),
+        level_data.len()
+    );
+    let loaders = build_device_loaders(level_data, dev)?;
+    loaders
         .iter()
-        .map(|&i| lp.pairs[i].0)
-        .chain(take.iter().map(|&i| lp.pairs[i].1))
-        .collect();
-    let w: Vec<f32> = take.iter().map(|&i| lp.pairs[i].2).collect();
-    let (x, null) = loader.device_rows(&both)?;
-    let (z, _) = encoder.forward_t(&x, null.as_ref(), false)?;
-    // The representation the decoder sees: smoothed the same way.
-    let z = smooth_topics(z, topic_smoothing)?;
-    let d = latent_distance(&z.narrow(0, 0, n)?, &z.narrow(0, n, n)?, p.metric)?;
-    let w = to_1d(&w, d.device())?;
-    let penalty = (pair_hinge(&d, &w, lp.margin)? * f64::from(p.lambda))?;
-    Ok((loss + penalty)?)
+        .zip(decoders)
+        .map(|(loader, decoder)| {
+            let n = loader.num_data();
+            anyhow::ensure!(n > 0, "a level without rows has no likelihood");
+            let mut total = 0f64;
+            for start in (0..n).step_by(minibatch_size) {
+                let idx: Vec<u32> = (start..n.min(start + minibatch_size))
+                    .map(|i| i as u32)
+                    .collect();
+                let (x, null) = loader.device_rows(&idx)?;
+                let y = loader
+                    .device_output_rows(&idx)?
+                    .unwrap_or_else(|| x.clone());
+                let (log_z_nk, _) = encoder.forward_t(&x, null.as_ref(), false)?;
+                let log_z_nk = smooth_topics(log_z_nk.detach(), topic_smoothing)?;
+                let (_, llik) = decoder.forward_with_llik(&log_z_nk, &y, &topic_likelihood)?;
+                total += f64::from(llik.sum_all()?.to_scalar::<f32>()?);
+            }
+            Ok((total / n as f64) as f32)
+        })
+        .collect()
 }
+
+#[cfg(test)]
+#[path = "topic_tests.rs"]
+mod topic_tests;

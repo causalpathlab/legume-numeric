@@ -1,7 +1,5 @@
 use crate::matrix::graph::WeightedGraph;
-use crate::matrix::knn::all_pairs::knn_rows_l2;
-use crate::matrix::knn::ivf::{knn_rows_ivf, IvfArgs, DEFAULT_N_PROBE};
-use crate::matrix::knn::{EXACT_THRESHOLD, KNN_SEED};
+use crate::matrix::knn::EXACT_THRESHOLD;
 use crate::matrix::knn_match::{ColumnDict, SearchScratch};
 
 use indicatif::ParallelProgressIterator;
@@ -12,11 +10,8 @@ use rayon::prelude::*;
 
 const DEFAULT_BLOCK_SIZE: usize = 1000;
 
-/// Up to this many points every row's neighbours come from the exact
-/// all-pairs Gram kernel; beyond it from the inverted-file search. Both are
-/// parallel and thread-count independent; the split is where `O(n²)` stops
-/// being affordable.
-pub const ALL_PAIRS_THRESHOLD: usize = 65_536;
+use crate::matrix::knn::knn_rows;
+pub use crate::matrix::knn::ALL_PAIRS_THRESHOLD;
 
 pub struct KnnGraph {
     /// Symmetric CSC adjacency matrix (n_nodes x n_nodes)
@@ -746,26 +741,9 @@ fn search_dict(
     Ok(result?.into_iter().flatten().collect())
 }
 
-/// Every row's neighbours among the other rows, exactly by the all-pairs Gram
-/// kernel up to [`ALL_PAIRS_THRESHOLD`] rows and by the inverted-file search
-/// beyond it.
+/// Every row's neighbour list, by [`knn_rows`].
 fn search_rows(rows: &DMatrix<f32>, n_neighbours: usize) -> Vec<NeighbourList> {
-    let nn = rows.nrows();
-    let (indices, distances) = if nn <= ALL_PAIRS_THRESHOLD {
-        info!("kNN by the exact all-pairs kernel over {nn} points");
-        knn_rows_l2(rows, n_neighbours)
-    } else {
-        info!("kNN by the inverted-file search over {nn} points");
-        knn_rows_ivf(
-            rows,
-            &IvfArgs {
-                k: n_neighbours,
-                n_lists: 0,
-                n_probe: DEFAULT_N_PROBE,
-                seed: KNN_SEED,
-            },
-        )
-    };
+    let (indices, distances) = knn_rows(rows, n_neighbours);
     indices.into_iter().zip(distances).collect()
 }
 

@@ -2,7 +2,9 @@
 //! batches a minibatch takes, the checks before training, and that it pushes
 //! a close pair apart, from one gradient step to a whole training run.
 
-use super::{check_pairs, latent_distance, pair_batch, pair_hinge, PairMetric};
+use super::{
+    check_pairs, latent_distance, pair_batch, pair_hinge, quantile_distance, LevelPairs, PairMetric,
+};
 use crate::candle::convert::to_host;
 use candle_core::{Device, Tensor, Var};
 
@@ -37,6 +39,35 @@ fn euclidean_reads_z() {
     assert!((d[0] - 5.0).abs() < 1e-5 && d[1].abs() < 1e-5, "{d:?}");
 }
 
+/// The distance at quantile `q` among all pairs of rows: a latent's own scale,
+/// from which a margin is set. Points 0, 1, 2, 3 on a line have pair distances
+/// 1, 1, 1, 2, 2, 3.
+#[test]
+fn quantile_distance_over_all_pairs() {
+    let z = t(&[&[0.0], &[1.0], &[2.0], &[3.0]]);
+    let at = |q| quantile_distance(&z, PairMetric::Euclidean, q).unwrap();
+    assert_eq!(at(0.0), 1.0);
+    assert_eq!(at(0.5), 1.0);
+    assert_eq!(at(0.6), 2.0);
+    assert_eq!(at(1.0), 3.0);
+    assert!(quantile_distance(&t(&[&[0.0]]), PairMetric::Euclidean, 0.5).is_err());
+    assert!(quantile_distance(&z, PairMetric::Euclidean, 1.5).is_err());
+}
+
+/// Past a few hundred thousand pairs it samples them: reproducibly, and close
+/// to the exact quantile. 800 evenly spaced points on [0, 1] have a quarter of
+/// their pair distances below 1 − √0.75 ≈ 0.134.
+#[test]
+fn quantile_distance_samples_large_levels() {
+    let n = 800;
+    let rows: Vec<f32> = (0..n).map(|i| i as f32 / n as f32).collect();
+    let z = Tensor::from_vec(rows, (n, 1), &Device::Cpu).unwrap();
+    let a = quantile_distance(&z, PairMetric::Euclidean, 0.25).unwrap();
+    let b = quantile_distance(&z, PairMetric::Euclidean, 0.25).unwrap();
+    assert_eq!(a, b, "the same sample every time");
+    assert!((a - 0.134).abs() < 0.005, "{a}");
+}
+
 /// Weighted mean of max(0, margin − d)²: pairs already apart cost nothing.
 #[test]
 fn hinge_charges_only_pairs_inside_the_margin() {
@@ -58,12 +89,13 @@ fn pair_batches_cycle_through_the_pairs() {
     assert!(pair_batch(0, 4, 7).is_empty());
 }
 
-/// Pairs are checked once, before training: rows in range, and weights finite
+/// Pairs are checked once, before training: rows in range, weights finite
 /// and positive (a zero-weight batch would divide by zero, a negative weight
-/// would pull the pair together).
+/// would pull the pair together), and a finite, non-negative margin.
 #[test]
 fn pairs_are_checked_before_training() {
-    let ok = [(0, 1, 1.0), (2, 3, 0.5)];
+    let level = |pairs: Vec<(u32, u32, f32)>, margin: f32| LevelPairs { pairs, margin };
+    let ok = level(vec![(0, 1, 1.0), (2, 3, 0.5)], 0.3);
     assert!(check_pairs(&ok, 4).is_ok());
     assert!(
         check_pairs(&ok, 3).is_err(),
@@ -71,10 +103,20 @@ fn pairs_are_checked_before_training() {
     );
     for bad in [0.0, -1.0, f32::NAN, f32::INFINITY] {
         assert!(
-            check_pairs(&[(0, 1, bad)], 4).is_err(),
+            check_pairs(&level(vec![(0, 1, bad)], 0.3), 4).is_err(),
             "weight {bad} should be refused"
         );
     }
+    for bad in [-0.1, f32::NAN, f32::INFINITY] {
+        assert!(
+            check_pairs(&level(vec![(0, 1, 1.0)], bad), 4).is_err(),
+            "margin {bad} should be refused"
+        );
+    }
+    assert!(
+        check_pairs(&LevelPairs::default(), 0).is_ok(),
+        "a level without pairs"
+    );
 }
 
 /// The penalty's gradient moves a close pair apart: one step against it
@@ -118,6 +160,9 @@ fn the_gradient_is_finite_at_zero_distance() {
 struct LinearEncoder {
     lin: candle_nn::Linear,
     k: usize,
+    /// In training mode, emit the latent with no gradient: what the encoder
+    /// learns then comes from passes in evaluation mode only.
+    blind_in_training: bool,
 }
 
 impl crate::candle::traits::model::EncoderModuleT for LinearEncoder {
@@ -125,10 +170,15 @@ impl crate::candle::traits::model::EncoderModuleT for LinearEncoder {
         &self,
         x_nd: &Tensor,
         _x0_nd: Option<&Tensor>,
-        _train: bool,
+        train: bool,
     ) -> candle_core::Result<(Tensor, Tensor)> {
         use candle_nn::Module;
         let z = self.lin.forward(&(x_nd + 1.0)?.log()?)?;
+        let z = if train && self.blind_in_training {
+            z.detach()
+        } else {
+            z
+        };
         let kl = Tensor::zeros(x_nd.dim(0)?, x_nd.dtype(), x_nd.device())?;
         Ok((z, kl))
     }
@@ -142,7 +192,7 @@ impl crate::candle::traits::model::EncoderModuleT for LinearEncoder {
 /// labelled as a pair to push apart, training separates them.
 #[test]
 fn training_with_pairs_separates_a_labelled_pair() {
-    use super::{LevelPairs, PairPenalty};
+    use super::PairPenalty;
     use crate::candle::decoder::gaussian_nb::GaussianNbDecoder;
     use crate::candle::traits::model::EncoderModuleT;
     use crate::candle::vae::topic::{train_mixed_with_pairs, TrainConfig};
@@ -178,6 +228,7 @@ fn training_with_pairs_separates_a_labelled_pair() {
         let mut enc = LinearEncoder {
             lin: candle_nn::Linear::new(w0, Some(b0)),
             k,
+            blind_in_training: false,
         };
         let dec = GaussianNbDecoder::new(d, k, vb.pp("dec")).unwrap();
         let stop = AtomicBool::new(false);
@@ -193,11 +244,13 @@ fn training_with_pairs_separates_a_labelled_pair() {
             stop: &stop,
             loss_hook: None,
         };
-        let pairs: [LevelPairs; 1] = [vec![(0, 1, 1.0)]];
+        let pairs = [LevelPairs {
+            pairs: vec![(0, 1, 1.0)],
+            margin: 2.0,
+        }];
         let penalty = PairPenalty {
             per_level: &pairs,
             lambda: 50.0,
-            margin: 2.0,
             metric: PairMetric::Euclidean,
             batch: 1,
         };
@@ -223,4 +276,63 @@ fn training_with_pairs_separates_a_labelled_pair() {
         with > 0.3 && with > 3.0 * without,
         "with pairs {with}, without {without}"
     );
+}
+
+/// The penalty measures pairs as the critique sees them, by the encoder's
+/// mean in evaluation mode. A sampled training-mode latent would let an
+/// encoder spread a pair by inflating its noise rather than by moving it.
+/// Here training mode carries no gradient, so only that pass can move the
+/// encoder.
+#[test]
+fn the_penalty_reads_the_evaluation_mode_latent() {
+    use super::PairPenalty;
+    use crate::candle::decoder::gaussian_nb::GaussianNbDecoder;
+    use crate::candle::vae::topic::{train_mixed_with_pairs, TrainConfig};
+    use candle_core::DType;
+    use candle_nn::{VarBuilder, VarMap};
+    use nalgebra::DMatrix;
+    use std::sync::atomic::AtomicBool;
+
+    let (n, d, k) = (8usize, 4usize, 2usize);
+    let x = DMatrix::<f32>::from_fn(n, d, |i, j| (1 + (i * 3 + j) % 5) as f32);
+    let dev = Device::Cpu;
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &dev);
+    let w0 = vb
+        .pp("enc")
+        .get_with_hints((k, d), "weight", candle_nn::Init::Const(0.1))
+        .unwrap();
+    let mut enc = LinearEncoder {
+        lin: candle_nn::Linear::new(w0.clone(), None),
+        k,
+        blind_in_training: true,
+    };
+    let before = v(&w0.flatten_all().unwrap());
+    let dec = GaussianNbDecoder::new(d, k, vb.pp("dec")).unwrap();
+    let stop = AtomicBool::new(false);
+    let config = TrainConfig {
+        parameters: &varmap,
+        dev: &dev,
+        epochs: 2,
+        gpu_mem_fraction: None,
+        minibatch_size: 4,
+        learning_rate: 0.01,
+        topic_smoothing: 0.0,
+        grad_clip: 0.0,
+        stop: &stop,
+        loss_hook: None,
+    };
+    let pairs = [LevelPairs {
+        pairs: vec![(0, 1, 1.0)],
+        margin: 10.0,
+    }];
+    let penalty = PairPenalty {
+        per_level: &pairs,
+        lambda: 1.0,
+        metric: PairMetric::Euclidean,
+        batch: 1,
+    };
+    train_mixed_with_pairs(&[(&x, None, &x)], &mut enc, &[dec], &config, Some(&penalty)).unwrap();
+    let after = v(&w0.flatten_all().unwrap());
+    assert_ne!(before, after, "the penalty's pass reached the encoder");
 }

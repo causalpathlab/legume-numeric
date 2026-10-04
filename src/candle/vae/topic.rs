@@ -406,25 +406,26 @@ fn add_pair_penalty<Enc: EncoderModuleT>(
     let Some(lp) = p.per_level.get(level) else {
         return Ok(loss);
     };
-    let take = pair_batch(lp.len(), p.batch, step);
+    let take = pair_batch(lp.pairs.len(), p.batch, step);
     if take.is_empty() {
         return Ok(loss);
     }
-    // Both ends in one forward pass: batch-normalised encoders see at least
-    // two rows, and both ends of a pair share one normalisation.
+    // Both ends in one forward pass, in evaluation mode: the mean latent the
+    // critique ranked, not a sample, which an encoder could spread by
+    // inflating its noise instead of moving the pair.
     let n = take.len();
     let both: Vec<u32> = take
         .iter()
-        .map(|&i| lp[i].0)
-        .chain(take.iter().map(|&i| lp[i].1))
+        .map(|&i| lp.pairs[i].0)
+        .chain(take.iter().map(|&i| lp.pairs[i].1))
         .collect();
-    let w: Vec<f32> = take.iter().map(|&i| lp[i].2).collect();
+    let w: Vec<f32> = take.iter().map(|&i| lp.pairs[i].2).collect();
     let (x, null) = loader.device_rows(&both)?;
-    let (z, _) = encoder.forward_t(&x, null.as_ref(), true)?;
+    let (z, _) = encoder.forward_t(&x, null.as_ref(), false)?;
     // The representation the decoder sees: smoothed the same way.
     let z = smooth_topics(z, topic_smoothing)?;
     let d = latent_distance(&z.narrow(0, 0, n)?, &z.narrow(0, n, n)?, p.metric)?;
     let w = to_1d(&w, d.device())?;
-    let penalty = (pair_hinge(&d, &w, p.margin)? * f64::from(p.lambda))?;
+    let penalty = (pair_hinge(&d, &w, lp.margin)? * f64::from(p.lambda))?;
     Ok((loss + penalty)?)
 }

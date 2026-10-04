@@ -9,6 +9,8 @@
 //! Euclidean on z for a Gaussian one.
 
 use candle_core::{Result, Tensor};
+use rand::rngs::SmallRng;
+use rand::{RngExt, SeedableRng};
 
 /// How a latent row is compared, matching the view the pairs came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,14 +21,21 @@ pub enum PairMetric {
     Euclidean,
 }
 
-/// One level's pairs: `(row a, row b, weight)`, rows of the level's data. An
-/// empty list is a level without pairs.
-pub type LevelPairs = Vec<(u32, u32, f32)>;
+/// One level's pairs, `(row a, row b, weight)` in rows of the level's data,
+/// and the distance at which they stop costing anything. Per level, because a
+/// latent's spread differs by level: finer pseudobulks sit closer together.
+/// The default, no pairs, is a level without any.
+#[derive(Clone, Debug, Default)]
+pub struct LevelPairs {
+    pub pairs: Vec<(u32, u32, f32)>,
+    pub margin: f32,
+}
 
-/// Before training: every row below `n_rows`, and every weight finite and
+/// Before training: every row below `n_rows`, every weight finite and
 /// positive, so a batch's weights never sum to zero and no pair is pulled
-/// together.
-pub fn check_pairs(pairs: &[(u32, u32, f32)], n_rows: usize) -> anyhow::Result<()> {
+/// together, and a finite margin not below zero.
+pub fn check_pairs(level: &LevelPairs, n_rows: usize) -> anyhow::Result<()> {
+    let pairs = &level.pairs;
     if let Some(&(a, b, _)) = pairs
         .iter()
         .find(|&&(a, b, _)| a as usize >= n_rows || b as usize >= n_rows)
@@ -36,6 +45,11 @@ pub fn check_pairs(pairs: &[(u32, u32, f32)], n_rows: usize) -> anyhow::Result<(
     if let Some(&(_, _, w)) = pairs.iter().find(|&&(_, _, w)| !(w.is_finite() && w > 0.0)) {
         anyhow::bail!("pair weight {w} is not finite and positive");
     }
+    anyhow::ensure!(
+        level.margin.is_finite() && level.margin >= 0.0,
+        "margin {} is not finite and non-negative",
+        level.margin
+    );
     Ok(())
 }
 
@@ -47,8 +61,6 @@ pub struct PairPenalty<'a> {
     pub per_level: &'a [LevelPairs],
     /// Weight of the penalty against the per-sample ELBO; 0 turns it off.
     pub lambda: f32,
-    /// Distance at which a pair stops costing anything.
-    pub margin: f32,
     pub metric: PairMetric,
     /// Pairs per minibatch.
     pub batch: usize,
@@ -67,6 +79,44 @@ pub fn latent_distance(a: &Tensor, b: &Tensor, metric: PairMetric) -> Result<Ten
         PairMetric::Hellinger => d.affine(std::f64::consts::FRAC_1_SQRT_2, 0.0),
         PairMetric::Euclidean => Ok(d),
     }
+}
+
+/// Pairs [`quantile_distance`] measures at most; a larger level is sampled.
+const QUANTILE_PAIRS: usize = 200_000;
+
+/// The distance at quantile `q` among pairs of rows of `z`, in `metric`: a
+/// latent's own scale, to set a level's margin from. Every pair when there are
+/// at most [`QUANTILE_PAIRS`], else that many drawn with a fixed seed, so the
+/// same latent always gives the same margin.
+pub fn quantile_distance(z: &Tensor, metric: PairMetric, q: f32) -> anyhow::Result<f32> {
+    let n = z.dim(0)?;
+    anyhow::ensure!(
+        n >= 2,
+        "a quantile of pair distances needs two rows, not {n}"
+    );
+    anyhow::ensure!((0.0..=1.0).contains(&q), "quantile {q} is outside [0, 1]");
+    let (a, b): (Vec<u32>, Vec<u32>) = if n * (n - 1) / 2 <= QUANTILE_PAIRS {
+        (0..n as u32)
+            .flat_map(|i| (i + 1..n as u32).map(move |j| (i, j)))
+            .unzip()
+    } else {
+        let mut rng = SmallRng::seed_from_u64(0x5EED);
+        (0..QUANTILE_PAIRS)
+            .map(|_| {
+                let i = rng.random_range(0..n);
+                let j = (i + rng.random_range(1..n)) % n;
+                (i as u32, j as u32)
+            })
+            .unzip()
+    };
+    let rows = |idx: Vec<u32>| -> Result<Tensor> {
+        let len = idx.len();
+        z.index_select(&Tensor::from_vec(idx, len, z.device())?, 0)
+    };
+    let mut d = latent_distance(&rows(a)?, &rows(b)?, metric)?.to_vec1::<f32>()?;
+    let at = (q * (d.len() - 1) as f32).floor() as usize;
+    let (_, &mut v, _) = d.select_nth_unstable_by(at, f32::total_cmp);
+    Ok(v)
 }
 
 /// `Σ w·max(0, margin − d)² / Σ w`.

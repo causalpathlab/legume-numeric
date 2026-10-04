@@ -5,6 +5,8 @@
 //! - [`train_mixed_multi_decoder`]: shared encoder + multiple weighted
 //!   decoders per level (via [`DynDecoderModuleT`]).
 //!
+//! [`level_llik`] scores a trained model without training it.
+//!
 //! Callers pre-build per-level `(input, batch, target)` `Mat` triples;
 //! all three are borrowed so a single matrix can back both input and
 //! target without cloning.
@@ -351,3 +353,57 @@ pub fn train_mixed_multi_decoder<Enc: EncoderModuleT>(
         kl: kl_trace,
     })
 }
+
+/// Each level's mean per-sample log-likelihood: the reconstruction term
+/// [`train_mixed`] reports as llik, summed over a level's rows and divided by
+/// their number. The encoder runs in evaluation mode, the mean latent smoothed
+/// as in training, with no sampling and no optimizer, so a model can be scored
+/// before and after a change to it ([`super::pairs::revise_encoder`]).
+pub fn level_llik<Enc, Dec>(
+    level_data: &[LevelData],
+    encoder: &Enc,
+    decoders: &[Dec],
+    dev: &Device,
+    topic_smoothing: f64,
+    minibatch_size: usize,
+) -> anyhow::Result<Vec<f32>>
+where
+    Enc: EncoderModuleT,
+    Dec: DecoderModuleT,
+{
+    anyhow::ensure!(minibatch_size > 0, "minibatch_size must be > 0");
+    anyhow::ensure!(
+        decoders.len() >= level_data.len(),
+        "{} decoders for {} levels",
+        decoders.len(),
+        level_data.len()
+    );
+    let loaders = build_device_loaders(level_data, dev)?;
+    loaders
+        .iter()
+        .zip(decoders)
+        .map(|(loader, decoder)| {
+            let n = loader.num_data();
+            anyhow::ensure!(n > 0, "a level without rows has no likelihood");
+            let mut total = 0f64;
+            for start in (0..n).step_by(minibatch_size) {
+                let idx: Vec<u32> = (start..n.min(start + minibatch_size))
+                    .map(|i| i as u32)
+                    .collect();
+                let (x, null) = loader.device_rows(&idx)?;
+                let y = loader
+                    .device_output_rows(&idx)?
+                    .unwrap_or_else(|| x.clone());
+                let (log_z_nk, _) = encoder.forward_t(&x, null.as_ref(), false)?;
+                let log_z_nk = smooth_topics(log_z_nk.detach(), topic_smoothing)?;
+                let (_, llik) = decoder.forward_with_llik(&log_z_nk, &y, &topic_likelihood)?;
+                total += f64::from(llik.sum_all()?.to_scalar::<f32>()?);
+            }
+            Ok((total / n as f64) as f32)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+#[path = "topic_tests.rs"]
+mod topic_tests;

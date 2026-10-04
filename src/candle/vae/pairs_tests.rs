@@ -1,7 +1,9 @@
 //! Tests for the peer-pair penalty: the latent distances, the hinge, the pair
-//! batches a minibatch takes, and that its gradient pushes a close pair apart.
+//! batches a minibatch takes, the checks before training, and that it pushes
+//! a close pair apart, from one gradient step to a whole training run.
 
-use super::{latent_distance, pair_batch, pair_hinge, LatentMetric};
+use super::{check_pairs, latent_distance, pair_batch, pair_hinge, PairMetric};
+use crate::candle::convert::to_host;
 use candle_core::{Device, Tensor, Var};
 
 fn t(rows: &[&[f32]]) -> Tensor {
@@ -12,7 +14,7 @@ fn t(rows: &[&[f32]]) -> Tensor {
 }
 
 fn v(x: &Tensor) -> Vec<f32> {
-    x.to_vec1::<f32>().unwrap()
+    to_host(x).unwrap()
 }
 
 /// Hellinger on θ, from the log θ a topic encoder emits: 0 for the same
@@ -22,7 +24,7 @@ fn hellinger_reads_log_theta() {
     let ln = |p: f32| p.max(1e-30).ln();
     let a = t(&[&[ln(1.0), ln(0.0)], &[ln(0.5), ln(0.5)]]);
     let b = t(&[&[ln(0.0), ln(1.0)], &[ln(0.5), ln(0.5)]]);
-    let d = v(&latent_distance(&a, &b, LatentMetric::Hellinger).unwrap());
+    let d = v(&latent_distance(&a, &b, PairMetric::Hellinger).unwrap());
     assert!((d[0] - 1.0).abs() < 1e-5, "{d:?}");
     assert!(d[1].abs() < 1e-5, "{d:?}");
 }
@@ -31,7 +33,7 @@ fn hellinger_reads_log_theta() {
 fn euclidean_reads_z() {
     let a = t(&[&[0.0, 0.0], &[1.0, 1.0]]);
     let b = t(&[&[3.0, 4.0], &[1.0, 1.0]]);
-    let d = v(&latent_distance(&a, &b, LatentMetric::Euclidean).unwrap());
+    let d = v(&latent_distance(&a, &b, PairMetric::Euclidean).unwrap());
     assert!((d[0] - 5.0).abs() < 1e-5 && d[1].abs() < 1e-5, "{d:?}");
 }
 
@@ -56,6 +58,25 @@ fn pair_batches_cycle_through_the_pairs() {
     assert!(pair_batch(0, 4, 7).is_empty());
 }
 
+/// Pairs are checked once, before training: rows in range, and weights finite
+/// and positive (a zero-weight batch would divide by zero, a negative weight
+/// would pull the pair together).
+#[test]
+fn pairs_are_checked_before_training() {
+    let ok = [(0, 1, 1.0), (2, 3, 0.5)];
+    assert!(check_pairs(&ok, 4).is_ok());
+    assert!(
+        check_pairs(&ok, 3).is_err(),
+        "row 3 is out of range for 3 rows"
+    );
+    for bad in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+        assert!(
+            check_pairs(&[(0, 1, bad)], 4).is_err(),
+            "weight {bad} should be refused"
+        );
+    }
+}
+
 /// The penalty's gradient moves a close pair apart: one step against it
 /// raises their distance.
 #[test]
@@ -63,18 +84,32 @@ fn the_penalty_pushes_a_close_pair_apart() {
     let za = Var::from_tensor(&t(&[&[0.0, 0.0]])).unwrap();
     let zb = Var::from_tensor(&t(&[&[0.1, 0.0]])).unwrap();
     let w = Tensor::new(&[1.0f32], &Device::Cpu).unwrap();
-    let dist =
-        |a: &Tensor, b: &Tensor| v(&latent_distance(a, b, LatentMetric::Euclidean).unwrap())[0];
-    let before = dist(za.as_tensor(), zb.as_tensor());
-    let d = latent_distance(za.as_tensor(), zb.as_tensor(), LatentMetric::Euclidean).unwrap();
-    let loss = pair_hinge(&d, &w, 1.0).unwrap();
-    let grads = loss.backward().unwrap();
+    let d = latent_distance(za.as_tensor(), zb.as_tensor(), PairMetric::Euclidean).unwrap();
+    let before = v(&d)[0];
+    let grads = pair_hinge(&d, &w, 1.0).unwrap().backward().unwrap();
     let step = |x: &Var| {
         let g = grads.get(x).unwrap().affine(0.1, 0.0).unwrap();
         x.as_tensor().sub(&g).unwrap()
     };
-    let after = dist(&step(&za), &step(&zb));
+    let after = v(&latent_distance(&step(&za), &step(&zb), PairMetric::Euclidean).unwrap())[0];
     assert!(after > before, "{before} -> {after}");
+}
+
+/// Labelled pairs are often at the same point: the penalty's gradient there
+/// must stay finite, or one such pair turns a whole training step into NaN.
+#[test]
+fn the_gradient_is_finite_at_zero_distance() {
+    for metric in [PairMetric::Euclidean, PairMetric::Hellinger] {
+        let za = Var::from_tensor(&t(&[&[-0.7, -0.7]])).unwrap();
+        let zb = Var::from_tensor(&t(&[&[-0.7, -0.7]])).unwrap();
+        let w = Tensor::new(&[1.0f32], &Device::Cpu).unwrap();
+        let d = latent_distance(za.as_tensor(), zb.as_tensor(), metric).unwrap();
+        let grads = pair_hinge(&d, &w, 1.0).unwrap().backward().unwrap();
+        for x in [&za, &zb] {
+            let g = v(grads.get(x).unwrap());
+            assert!(g.iter().all(|v| v.is_finite()), "{metric:?}: {g:?}");
+        }
+    }
 }
 
 /// A transparent encoder for the end-to-end test: a learned linear map of
@@ -130,8 +165,18 @@ fn training_with_pairs_separates_a_labelled_pair() {
         let dev = Device::Cpu;
         let varmap = VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, DType::F32, &dev);
+        // A fixed starting point: candle cannot seed its CPU generator, and a
+        // random one makes the run-to-run spread larger than the effect.
+        let w0 = vb
+            .pp("enc")
+            .get_with_hints((k, d), "weight", candle_nn::Init::Const(0.1))
+            .unwrap();
+        let b0 = vb
+            .pp("enc")
+            .get_with_hints(k, "bias", candle_nn::Init::Const(0.0))
+            .unwrap();
         let mut enc = LinearEncoder {
-            lin: candle_nn::linear(d, k, vb.pp("enc")).unwrap(),
+            lin: candle_nn::Linear::new(w0, Some(b0)),
             k,
         };
         let dec = GaussianNbDecoder::new(d, k, vb.pp("dec")).unwrap();
@@ -148,16 +193,12 @@ fn training_with_pairs_separates_a_labelled_pair() {
             stop: &stop,
             loss_hook: None,
         };
-        let pairs = [Some(LevelPairs {
-            a: vec![0],
-            b: vec![1],
-            weight: vec![1.0],
-        })];
+        let pairs: [LevelPairs; 1] = [vec![(0, 1, 1.0)]];
         let penalty = PairPenalty {
             per_level: &pairs,
-            lambda: 10.0,
+            lambda: 50.0,
             margin: 2.0,
-            metric: LatentMetric::Euclidean,
+            metric: PairMetric::Euclidean,
             batch: 1,
         };
         train_mixed_with_pairs(
@@ -174,7 +215,7 @@ fn training_with_pairs_separates_a_labelled_pair() {
         };
         let (za, _) = enc.forward_t(&rows(0), None, false).unwrap();
         let (zb, _) = enc.forward_t(&rows(1), None, false).unwrap();
-        v(&latent_distance(&za, &zb, LatentMetric::Euclidean).unwrap())[0]
+        v(&latent_distance(&za, &zb, PairMetric::Euclidean).unwrap())[0]
     };
     let without = train(false);
     let with = train(true);
@@ -182,27 +223,4 @@ fn training_with_pairs_separates_a_labelled_pair() {
         with > 0.3 && with > 3.0 * without,
         "with pairs {with}, without {without}"
     );
-}
-
-/// Labelled pairs are often at the same point: the penalty's gradient there
-/// must stay finite, or one such pair turns a whole training step into NaN.
-#[test]
-fn the_gradient_is_finite_at_zero_distance() {
-    for metric in [LatentMetric::Euclidean, LatentMetric::Hellinger] {
-        let za = Var::from_tensor(&t(&[&[-0.7, -0.7]])).unwrap();
-        let zb = Var::from_tensor(&t(&[&[-0.7, -0.7]])).unwrap();
-        let w = Tensor::new(&[1.0f32], &Device::Cpu).unwrap();
-        let d = latent_distance(za.as_tensor(), zb.as_tensor(), metric).unwrap();
-        let grads = pair_hinge(&d, &w, 1.0).unwrap().backward().unwrap();
-        for x in [&za, &zb] {
-            let g = grads
-                .get(x)
-                .unwrap()
-                .flatten_all()
-                .unwrap()
-                .to_vec1::<f32>()
-                .unwrap();
-            assert!(g.iter().all(|v| v.is_finite()), "{metric:?}: {g:?}");
-        }
-    }
 }

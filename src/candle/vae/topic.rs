@@ -1,8 +1,9 @@
 //! Dense VAE trainer for topic models (`EncoderModuleT` + `DecoderModuleT`).
 //!
-//! Two entry points:
-//! - [`train_mixed`]: shared encoder + one decoder per cascade level;
-//!   [`train_mixed_with_pairs`] adds the peer-pair penalty ([`super::pairs`]).
+//! Three entry points:
+//! - [`train_mixed`]: shared encoder + one decoder per cascade level.
+//! - [`train_mixed_with_pairs`]: the same, plus the peer-pair penalty
+//!   ([`super::pairs`]).
 //! - [`train_mixed_multi_decoder`]: shared encoder + multiple weighted
 //!   decoders per level (via [`DynDecoderModuleT`]).
 //!
@@ -10,8 +11,9 @@
 //! all three are borrowed so a single matrix can back both input and
 //! target without cloning.
 
-use super::pairs::{latent_distance, pair_batch, pair_hinge, PairPenalty};
+use super::pairs::{check_pairs, latent_distance, pair_batch, pair_hinge, PairPenalty};
 use super::{clip_grads_and_step, smooth_topics, LevelLossHook, TrainScores};
+use crate::candle::convert::to_1d;
 use crate::candle::data::indexed::labeled_bar;
 use crate::candle::data::loader::{DataLoader, InMemoryArgs, InMemoryData};
 use crate::candle::decoder::dyn_decoder::DynDecoderModuleT;
@@ -25,8 +27,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 type Mat = DMatrix<f32>;
 
-/// Hyperparameter bundle passed by reference to [`train_mixed`] and
-/// [`train_mixed_multi_decoder`].
+/// Hyperparameter bundle passed by reference to [`train_mixed`],
+/// [`train_mixed_with_pairs`] and [`train_mixed_multi_decoder`].
 pub struct TrainConfig<'a> {
     pub parameters: &'a candle_nn::VarMap,
     pub dev: &'a Device,
@@ -125,6 +127,17 @@ where
     let mut llik_trace = Vec::with_capacity(total_epochs);
     let mut kl_trace = Vec::with_capacity(total_epochs);
 
+    // A penalty with no weight is no penalty; the rest is checked once here.
+    let pairs = pairs.filter(|p| p.lambda > 0.0);
+    if let Some(p) = pairs {
+        for (level, lp) in p.per_level.iter().enumerate() {
+            if let Some(&(mixed, _, _)) = level_data.get(level) {
+                check_pairs(lp, mixed.nrows())
+                    .map_err(|e| anyhow::anyhow!("level {level}: {e}"))?;
+            }
+        }
+    }
+
     let mut data_loaders = build_device_loaders(level_data, config.dev)?;
 
     // On CUDA, optionally shrink the minibatch size to fit free device
@@ -188,7 +201,8 @@ where
                 let loss = match pairs {
                     Some(p) => {
                         let step = epoch * loader.num_minibatch() + b;
-                        add_pair_penalty(loss, &*encoder, loader, p, level, step)?
+                        let smoothing = config.topic_smoothing;
+                        add_pair_penalty(loss, &*encoder, loader, p, level, step, smoothing)?
                     }
                     None => loss,
                 };
@@ -387,25 +401,30 @@ fn add_pair_penalty<Enc: EncoderModuleT>(
     p: &PairPenalty,
     level: usize,
     step: usize,
+    topic_smoothing: f64,
 ) -> anyhow::Result<Tensor> {
-    let Some(Some(lp)) = p.per_level.get(level) else {
+    let Some(lp) = p.per_level.get(level) else {
         return Ok(loss);
     };
     let take = pair_batch(lp.len(), p.batch, step);
-    if take.is_empty() || p.lambda <= 0.0 {
+    if take.is_empty() {
         return Ok(loss);
     }
-    let a: Vec<u32> = take.iter().map(|&i| lp.a[i]).collect();
-    let b: Vec<u32> = take.iter().map(|&i| lp.b[i]).collect();
-    let w: Vec<f32> = take.iter().map(|&i| lp.weight[i]).collect();
     // Both ends in one forward pass: batch-normalised encoders see at least
     // two rows, and both ends of a pair share one normalisation.
-    let n = a.len();
-    let both: Vec<u32> = a.into_iter().chain(b).collect();
+    let n = take.len();
+    let both: Vec<u32> = take
+        .iter()
+        .map(|&i| lp[i].0)
+        .chain(take.iter().map(|&i| lp[i].1))
+        .collect();
+    let w: Vec<f32> = take.iter().map(|&i| lp[i].2).collect();
     let (x, null) = loader.device_rows(&both)?;
     let (z, _) = encoder.forward_t(&x, null.as_ref(), true)?;
+    // The representation the decoder sees: smoothed the same way.
+    let z = smooth_topics(z, topic_smoothing)?;
     let d = latent_distance(&z.narrow(0, 0, n)?, &z.narrow(0, n, n)?, p.metric)?;
-    let w = Tensor::from_vec(w, take.len(), d.device())?;
+    let w = to_1d(&w, d.device())?;
     let penalty = (pair_hinge(&d, &w, p.margin)? * f64::from(p.lambda))?;
     Ok((loss + penalty)?)
 }

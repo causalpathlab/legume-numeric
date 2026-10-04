@@ -12,57 +12,60 @@ use candle_core::{Result, Tensor};
 
 /// How a latent row is compared, matching the view the pairs came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LatentMetric {
+pub enum PairMetric {
     /// Rows are log θ: `‖√θ_a − √θ_b‖ / √2`, in `[0, 1]`.
     Hellinger,
     /// Rows are z: `‖z_a − z_b‖`.
     Euclidean,
 }
 
-/// One level's pairs: row indices `a[i]`, `b[i]` into the level's data, and a
-/// weight per pair.
-#[derive(Clone, Debug, Default)]
-pub struct LevelPairs {
-    pub a: Vec<u32>,
-    pub b: Vec<u32>,
-    pub weight: Vec<f32>,
+/// One level's pairs: `(row a, row b, weight)`, rows of the level's data. An
+/// empty list is a level without pairs.
+pub type LevelPairs = Vec<(u32, u32, f32)>;
+
+/// Before training: every row below `n_rows`, and every weight finite and
+/// positive, so a batch's weights never sum to zero and no pair is pulled
+/// together.
+pub fn check_pairs(pairs: &[(u32, u32, f32)], n_rows: usize) -> anyhow::Result<()> {
+    if let Some(&(a, b, _)) = pairs
+        .iter()
+        .find(|&&(a, b, _)| a as usize >= n_rows || b as usize >= n_rows)
+    {
+        anyhow::bail!("pair ({a}, {b}) is out of range for a level of {n_rows} rows");
+    }
+    if let Some(&(_, _, w)) = pairs.iter().find(|&&(_, _, w)| !(w.is_finite() && w > 0.0)) {
+        anyhow::bail!("pair weight {w} is not finite and positive");
+    }
+    Ok(())
 }
 
-impl LevelPairs {
-    pub fn len(&self) -> usize {
-        self.a.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.a.is_empty()
-    }
-}
-
-/// The penalty a trainer adds to its loss. `per_level[l]` is `None` for a level
-/// without pairs.
+/// The penalty a trainer adds to its loss. `per_level[l]` holds level `l`'s
+/// pairs. Its extra encoder pass over `2 · batch` rows per minibatch is not
+/// counted by the CUDA minibatch-size probe (`gpu_mem_fraction`); keep `batch`
+/// small next to the minibatch.
 pub struct PairPenalty<'a> {
-    pub per_level: &'a [Option<LevelPairs>],
-    /// Weight of the penalty against the per-sample ELBO.
+    pub per_level: &'a [LevelPairs],
+    /// Weight of the penalty against the per-sample ELBO; 0 turns it off.
     pub lambda: f32,
     /// Distance at which a pair stops costing anything.
     pub margin: f32,
-    pub metric: LatentMetric,
+    pub metric: PairMetric,
     /// Pairs per minibatch.
     pub batch: usize,
 }
 
 /// Row-wise distance between two `[n, k]` latent blocks.
-pub fn latent_distance(a: &Tensor, b: &Tensor, metric: LatentMetric) -> Result<Tensor> {
+pub fn latent_distance(a: &Tensor, b: &Tensor, metric: PairMetric) -> Result<Tensor> {
     let diff = match metric {
-        LatentMetric::Hellinger => (a.exp()?.sqrt()? - b.exp()?.sqrt()?)?,
-        LatentMetric::Euclidean => (a - b)?,
+        PairMetric::Hellinger => (a.exp()?.sqrt()? - b.exp()?.sqrt()?)?,
+        PairMetric::Euclidean => (a - b)?,
     };
     // The floor keeps the gradient finite where a pair coincides, which is
     // exactly where labelled pairs start; it moves a distance by at most 1e-6.
     let d = (diff.sqr()?.sum(1)? + 1e-12)?.sqrt()?;
     match metric {
-        LatentMetric::Hellinger => d.affine(std::f64::consts::FRAC_1_SQRT_2, 0.0),
-        LatentMetric::Euclidean => Ok(d),
+        PairMetric::Hellinger => d.affine(std::f64::consts::FRAC_1_SQRT_2, 0.0),
+        PairMetric::Euclidean => Ok(d),
     }
 }
 

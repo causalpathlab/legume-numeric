@@ -100,22 +100,6 @@ pub struct ModuleTarget<'a> {
     pub lib: &'a Tensor,
 }
 
-/// Minibatch target for the gene-level **query head**: a sampled set of
-/// genes per row, each read at its module's rate times its share times the
-/// query decoder's residual.
-pub struct QueryTarget<'a> {
-    /// `[N, Q]` u32 query genes (gene 0 on pads).
-    pub gene_ids: &'a Tensor,
-    /// `[N, Q]` target counts at the query genes.
-    pub values: &'a Tensor,
-    /// `[N, Q]` 1 on a real query, 0 on a pad.
-    pub weight: &'a Tensor,
-    /// `[N, Q]` the query decoder's log-residual `r_g`.
-    pub log_residual: &'a Tensor,
-    /// `[N, 1]` per-row library size over the full row.
-    pub lib: &'a Tensor,
-}
-
 /// NB embedded-topic decoder for masked imputation.
 pub struct EmbeddedNbTopicDecoder {
     /// Rows of ρ: the gene axis.
@@ -431,28 +415,6 @@ impl EmbeddedNbTopicDecoder {
         )
     }
 
-    /// Masked **multinomial** (categorical) imputation log-likelihood, summed
-    /// over masked positions → `[N]`. The MLM-faithful sibling of
-    /// [`Self::impute_masked_nb`]: it reuses the identical mixture rate
-    /// `p_g = Σ_t θ_t · β_{t,g}` (β normalized over the full vocab, so
-    /// `Σ_g p_g = 1`) but scores it as full-vocab categorical cross-entropy
-    /// `Σ_{g∈mask} y_g · log p_g` — exactly BERT's MLM loss — instead of a
-    /// per-gene NB. Depth-invariant: no library-size, no dispersion `φ`, no
-    /// batch `residual` (those shape the NB *counts*; the multinomial models
-    /// only relative composition). Sharing `p_g` with the NB head makes an
-    /// ELBO-vs-masked comparison differ *only* in the objective, not the
-    /// likelihood family.
-    pub fn impute_masked_multinomial(
-        &self,
-        log_theta_nk: &Tensor,
-        target: &MaskedNbTarget<'_>,
-        full_kd: &Tensor,
-    ) -> Result<Tensor> {
-        let p_nk = self.mixture_rate_nk(log_theta_nk, target.indices, full_kd)?; // [N, K]
-                                                                                 // Categorical cross-entropy at masked positions: Σ y_g · log p_g.
-        multinomial_score(target.values, &p_nk, Some(target.mask))
-    }
-
     ////////////////////////////////////////////////////
     // Dense heads — scored over the whole gene axis   //
     ////////////////////////////////////////////////////
@@ -498,7 +460,7 @@ impl EmbeddedNbTopicDecoder {
     }
 
     /// Masked multinomial imputation log-likelihood at the row's hidden genes →
-    /// `[N]`. The dense sibling of [`Self::impute_masked_multinomial`].
+    /// `[N]`.
     pub fn impute_dense_multinomial(
         &self,
         log_theta_nk: &Tensor,
@@ -569,27 +531,6 @@ impl EmbeddedNbTopicDecoder {
         let share = target.visible_share.affine(-1.0, 1.0)?;
         let scored = share.gt(1e-6)?.to_dtype(rate_nm.dtype())?;
         Ok((rate_nm, unseen, share, scored))
-    }
-
-    /// NB log-likelihood at the sampled query genes, weighted, → `[N]`:
-    /// `μ_nq = ℓ_n · (θβ)_{m(g)} · π_{g|m(g)} · exp(r_nq)`, `φ` at the module.
-    /// With `r = 0` this is the expanded dictionary's rate.
-    pub fn score_queries_nb(
-        &self,
-        log_theta_nk: &Tensor,
-        q: &QueryTarget<'_>,
-        full_km: &Tensor,
-    ) -> Result<Tensor> {
-        let rate_nm = self.mixture_rate_nd(log_theta_nk, full_km)?; // [N, M]
-        let ids_m = self.coarsening.groups_of(q.gene_ids)?; // [N, Q]
-        let rate_nq = rate_nm.gather(&ids_m, 1)?; // [N, Q]
-        let log_factor = (self.coarsening.log_share_at(q.gene_ids)? + q.log_residual)?;
-        let mu = rate_nq.mul(&log_factor.exp()?)?.broadcast_mul(q.lib)?;
-        let (n, qn) = ids_m.dims2()?;
-        let log_phi =
-            gather_rows(&self.log_phi_1d.squeeze(0)?, &ids_m.flatten_all()?)?.reshape((n, qn))?;
-        let elem = nb_log_likelihood_elem(q.values, &mu, &log_phi)?;
-        elem.mul(q.weight)?.sum(1)
     }
 }
 

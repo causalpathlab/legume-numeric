@@ -4,7 +4,7 @@ use crate::candle::loss::nb_log_likelihood;
 use crate::candle::nn::linear::*;
 use crate::candle::traits::model::*;
 use candle_core::{Result, Tensor};
-use candle_nn::{ops, Module, VarBuilder};
+use candle_nn::{Module, VarBuilder};
 
 /////////////////////////
 // Topic Model Decoder //
@@ -277,27 +277,6 @@ impl DecoderModuleT for NbTopicDecoder {
 
     fn dim_latent(&self) -> usize {
         self.n_topics
-    }
-
-    fn build_ess_llik<'a>(
-        &'a self,
-        x_nd: &'a Tensor,
-        topic_smoothing: f64,
-    ) -> Result<EssLlikFn<'a>> {
-        let log_dict_dk = self.get_dictionary()?.detach();
-        let beta_kd = log_dict_dk.t()?.exp()?.contiguous()?;
-        let log_phi = self.log_phi_1d.detach();
-        let lib_n1 = x_nd.sum(x_nd.rank() - 1)?.unsqueeze(1)?;
-        let k = self.dim_latent() as f64;
-
-        Ok(Box::new(move |z_nk: &Tensor| {
-            let mut z = ops::softmax(z_nk, 1)?;
-            if topic_smoothing > 0.0 {
-                z = ((z * (1.0 - topic_smoothing))? + topic_smoothing / k)?;
-            }
-            let mu = z.matmul(&beta_kd)?.broadcast_mul(&lib_n1)?;
-            nb_log_likelihood(x_nd, &mu, &log_phi)
-        }))
     }
 }
 

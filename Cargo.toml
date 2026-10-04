@@ -4,7 +4,7 @@ version = "0.8.20"
 authors = ["Yongjin Park <ypp@stat.ubc.ca>"]
 edition = "2021"
 license = "MIT"
-description = "Numeric and ML foundation for the legume ecosystem (matrix, Leiden, candle, MCMC)"
+description = "Numeric and ML foundation for the legume ecosystem (matrix, Leiden, candle, MCMC diagnostics)"
 repository = "https://github.com/causalpathlab/legume-numeric"
 homepage = "https://github.com/causalpathlab/legume-numeric"
 rust-version = "1.91"
@@ -24,8 +24,8 @@ tensor = ["matrix", "dep:candle-core"]
 ndarray = ["matrix", "dep:ndarray"]
 # Expose candle-util helpers (`legume_numeric::candle`)
 candle = ["matrix", "param", "tensor", "dep:candle-nn"]
-# Expose MCMC engine (`legume_numeric::mcmc`)
-mcmc = ["matrix", "tensor"]
+# Expose MCMC diagnostics (`legume_numeric::mcmc`)
+mcmc = ["matrix"]
 cuda = ["tensor", "candle-core/cuda", "candle-core/cudnn", "candle-nn?/cuda"]
 metal = [
     "tensor",

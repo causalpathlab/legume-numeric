@@ -121,29 +121,17 @@ fn apply_global_l2_clip(
     max_norm: f64,
 ) -> anyhow::Result<bool> {
     let ids: Vec<_> = grads.get_ids().copied().collect();
-    let mut sumsq: Option<Tensor> = None;
-    for id in &ids {
-        if let Some(g) = grads.get_id(*id) {
-            let s = g.sqr()?.sum_all()?;
-            sumsq = Some(match sumsq {
-                None => s,
-                Some(prev) => (prev + s)?,
-            });
-        }
-    }
-    let Some(sumsq) = sumsq else {
-        return Ok(true);
-    };
-    // One f32 host read per step. The trainers around this already sync the
+    // One host read per step, summed in an order the store cannot change
+    // (see `global_sumsq`). The trainers around this already sync the
     // per-minibatch likelihood scalar, so this adds no new round-trip class.
-    if !sumsq.to_scalar::<f32>()?.is_finite() {
+    let sumsq = crate::candle::grad_clip::global_sumsq(grads)?;
+    if !sumsq.is_finite() {
         return Ok(false);
     }
-    let inv_norm = sumsq.sqrt()?.affine(1.0, 1e-6)?.powf(-1.0)?;
-    let scale = inv_norm.affine(max_norm, 0.0)?.clamp(0.0_f64, 1.0_f64)?;
+    let scale = (max_norm / (sumsq.sqrt() + 1e-6)).clamp(0.0, 1.0);
     for id in &ids {
         if let Some(g) = grads.get_id(*id) {
-            let scaled = g.broadcast_mul(&scale)?;
+            let scaled = g.affine(scale, 0.0)?;
             grads.insert_id(*id, scaled);
         }
     }

@@ -41,7 +41,7 @@ use candle_nn::{VarBuilder, VarMap};
 /// Small enough that sparsemax keeps every module in the support and the
 /// membership is near-uniform, large enough to break the symmetry that would
 /// otherwise stall the dictionary and the topics at step 0.
-const INIT_LOGIT_JITTER: f64 = 0.01;
+pub(crate) const INIT_LOGIT_JITTER: f64 = 0.01;
 
 /// Registered names, so a caller owning the `VarMap` can reach them without
 /// hard-coding a string this module chose.

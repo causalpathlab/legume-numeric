@@ -274,8 +274,16 @@ impl DenseMaskedLevel {
         let nbatch = self.p.div_ceil(batch_size);
         let ntot = nbatch * batch_size;
         let mut order: Vec<u32> = (0..self.p as u32).collect();
-        order.shuffle(&mut rand::rng());
-        order.extend(bootstrap_indices::<u32>(self.p, ntot - self.p));
+        // Both from the epoch's seed, so which rows share a minibatch replays.
+        let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(
+            crate::matrix::rand_util::mix_seed(epoch_seed, 0x4f52_4445),
+        );
+        order.shuffle(&mut rng);
+        order.extend(bootstrap_indices::<u32>(
+            self.p,
+            ntot - self.p,
+            crate::matrix::rand_util::mix_seed(epoch_seed, 0x5041_4400),
+        ));
         Ok(DenseMaskedEpoch {
             level: self,
             order,

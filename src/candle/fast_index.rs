@@ -2,7 +2,7 @@
 //!
 //! `Tensor::index_select` on a `[D, H]` table is the right forward for every
 //! embedding lookup in the workspace — the encoder's context tokens, the
-//! query decoder's keys, values and queries, the bipartite NCE edges. Its
+//! decoder's feature rows. Its
 //! backward is `index_add`, and candle's CUDA kernel for that parallelises
 //! only over the `H` columns while walking every id serially in each thread:
 //! at fifty thousand ids per step the backward costs fifty times the forward

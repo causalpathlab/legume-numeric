@@ -264,43 +264,6 @@ impl DecoderModuleT for NbMixtureTopicDecoder {
     fn dim_latent(&self) -> usize {
         self.n_topics
     }
-
-    fn build_ess_llik<'a>(
-        &'a self,
-        x_nd: &'a Tensor,
-        topic_smoothing: f64,
-    ) -> Result<EssLlikFn<'a>> {
-        let last_dim = x_nd.rank() - 1;
-        let log_dict_dk = self.get_dictionary()?.detach();
-        let beta_kd = log_dict_dk.t()?.exp()?.contiguous()?;
-        let log_phi = self.log_phi_1d.detach();
-        let log_alpha_det = self.log_alpha_1d.detach();
-        let alpha_1d = {
-            let r = log_alpha_det.rank();
-            ops::log_softmax(&log_alpha_det, r - 1)?.exp()?
-        };
-        let rho_a = self.rho_a.detach();
-        let rho_b = self.rho_b.detach();
-
-        let lib_n1 = x_nd.sum(last_dim)?.unsqueeze(1)?;
-        let log_lib = (&lib_n1 + 1e-8)?.log()?;
-        let rho_n1 = ops::sigmoid(&log_lib.broadcast_mul(&rho_a)?.broadcast_add(&rho_b)?)?;
-        let one_minus_rho = rho_n1.affine(-1.0, 1.0)?;
-        let k = self.dim_latent() as f64;
-
-        Ok(Box::new(move |z_nk: &Tensor| {
-            let mut z = ops::softmax(z_nk, 1)?;
-            if topic_smoothing > 0.0 {
-                z = ((z * (1.0 - topic_smoothing))? + topic_smoothing / k)?;
-            }
-            let topic_recon = z.matmul(&beta_kd)?;
-            let pi = topic_recon
-                .broadcast_mul(&one_minus_rho)?
-                .broadcast_add(&alpha_1d.broadcast_mul(&rho_n1)?)?;
-            let mu = pi.broadcast_mul(&lib_n1)?;
-            nb_log_likelihood(x_nd, &mu, &log_phi)
-        }))
-    }
 }
 
 #[cfg(test)]

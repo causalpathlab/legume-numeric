@@ -1,10 +1,5 @@
 use candle_core::{Result, Tensor};
-use candle_nn::ops;
 use candle_nn::VarBuilder;
-
-/// Boxed log-likelihood closure for ESS evaluation.
-/// Maps `z_nk [N, K]` to per-sample log-likelihood `[N]`.
-pub type EssLlikFn<'a> = Box<dyn Fn(&Tensor) -> Result<Tensor> + 'a>;
 
 pub trait EncoderModuleT {
     /// An encoder that spits out two results (latent inference, KL loss)
@@ -115,34 +110,6 @@ pub trait DecoderModuleT {
     ) -> Result<()> {
         Ok(())
     }
-
-    /// Build a lightweight log-likelihood closure for ESS evaluation.
-    ///
-    /// Returns a boxed closure `|z_nk [N,K]| -> llik [N]` that uses
-    /// **detached** snapshots of decoder weights. No gradient graph is built,
-    /// and no redundant softmax recomputation occurs across ESS iterations.
-    ///
-    /// Default implementation pre-computes the dictionary and uses multinomial
-    /// log-likelihood. Override for decoders with different likelihoods (e.g. NB).
-    fn build_ess_llik<'a>(
-        &'a self,
-        x_nd: &'a Tensor,
-        topic_smoothing: f64,
-    ) -> Result<EssLlikFn<'a>> {
-        let log_dict_dk = self.get_dictionary()?.detach();
-        let beta_kd = log_dict_dk.t()?.exp()?.contiguous()?;
-        let x_pos = x_nd.clamp(0.0, f64::INFINITY)?;
-        let k = self.dim_latent() as f64;
-
-        Ok(Box::new(move |z_nk: &Tensor| {
-            let mut z = ops::softmax(z_nk, 1)?;
-            if topic_smoothing > 0.0 {
-                z = ((z * (1.0 - topic_smoothing))? + topic_smoothing / k)?;
-            }
-            let recon = z.matmul(&beta_kd)?;
-            x_pos.mul(&(recon + 1e-8)?.log()?)?.sum(x_pos.rank() - 1)
-        }))
-    }
 }
 
 /// Shared constructor for topic decoders: `new(n_features, n_topics, VarBuilder)`.
@@ -199,62 +166,6 @@ pub trait JointDecoderModuleT {
         LlikFn: Fn(&Tensor, &Tensor) -> Result<Tensor>;
 
     fn dim_obs(&self) -> &[usize];
-
-    fn dim_latent(&self) -> usize;
-}
-
-pub struct MatchedEncoderData<'a> {
-    pub left: &'a Tensor,
-    pub right: &'a Tensor,
-    pub aux_left: Option<&'a Tensor>,
-    pub aux_right: Option<&'a Tensor>,
-}
-
-pub struct MatchedDecoderData<'a> {
-    pub left: &'a Tensor,
-    pub right: &'a Tensor,
-    pub delta_left: Option<&'a Tensor>,
-    pub delta_right: Option<&'a Tensor>,
-}
-
-pub trait MatchedEncoderModuleT {
-    /// An encoder that spits out two results (latent inference, KL loss)
-    fn forward_t(&self, data: MatchedEncoderData, train: bool) -> Result<MatchedEncoderLatent>;
-
-    fn dim_obs(&self) -> usize;
-
-    fn dim_latent(&self) -> usize;
-}
-
-pub struct MatchedEncoderLatent {
-    pub logits_theta_left: Tensor,
-    pub logits_theta_right: Tensor,
-    pub kl_div: Tensor,
-}
-
-pub struct MatchedDecoderRecon {
-    pub x_left: Tensor,
-    pub x_right: Tensor,
-}
-
-pub trait MatchedDecoderModuleT {
-    /// A decoder that spits out reconstruction
-    fn forward(&self, latent: &MatchedEncoderLatent) -> Result<MatchedDecoderRecon>;
-
-    /// Get a representative dictionary matrix
-    fn get_dictionary(&self) -> Result<Tensor>;
-
-    /// A decoder that spits out reconstruction and log-likelihood
-    fn forward_with_llik<LlikFn>(
-        &self,
-        latent: &MatchedEncoderLatent,
-        x_pair: MatchedDecoderData,
-        llik: &LlikFn,
-    ) -> Result<(MatchedDecoderRecon, Tensor)>
-    where
-        LlikFn: Fn(&Tensor, &Tensor) -> Result<Tensor>;
-
-    fn dim_obs(&self) -> usize;
 
     fn dim_latent(&self) -> usize;
 }

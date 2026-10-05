@@ -5,13 +5,13 @@
 //! - [`matrix`] — matrix IO, KNN, layout, stats (ex `matrix-util`)
 //! - `param` — parametric helpers (ex `matrix-param`)
 //! - `candle` — candle training helpers (ex `candle-util`; feature `candle`)
-//! - `mcmc` — MCMC engine (ex `mcmc-util`; feature `mcmc`)
+//! - `mcmc` — MCMC diagnostics: effective sample size, split R̂ (feature `mcmc`)
 //!
 //! Features: `matrix` and `param` work on nalgebra `DMatrix` alone.
 //! `tensor` (default) adds candle `Tensor` support to the matrix code:
 //! conversions, tensor IO, sampling and fused ops. `ndarray` (default) adds
 //! ndarray `Array2` support: IO, sampling, `ndarray_stat`, `ndarray_gamma`
-//! and kNN from ndarray views. `candle` and `mcmc` build on `tensor`. A crate
+//! and kNN from ndarray views. `candle` builds on `tensor`. A crate
 //! that only needs `DMatrix` sets `default-features = false` and links
 //! neither candle nor ndarray.
 

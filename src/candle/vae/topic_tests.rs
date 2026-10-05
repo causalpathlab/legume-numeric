@@ -139,6 +139,7 @@ fn level_llik_rises_with_training() {
         topic_smoothing: 0.0,
         grad_clip: 0.0,
         stop: &stop,
+        seed: 1,
         loss_hook: None,
     };
     train_mixed(&levels, &mut enc, decs, &config).unwrap();

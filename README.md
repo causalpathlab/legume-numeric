@@ -10,12 +10,12 @@ Numeric and ML foundation for the [legume](https://github.com/causalpathlab/legu
 | `matrix` | `matrix` (default) | Matrix IO, KNN, layout, stats |
 | `param` | `param` (default) | Parametric / model helpers |
 | `candle` | `candle` | candle-core/nn training helpers |
-| `mcmc` | `mcmc` | MCMC engine + sparse regression |
+| `mcmc` | `mcmc` | MCMC diagnostics (effective sample size, split R̂); the samplers live in `sparse-bayes` |
 
 ## Features
 
 ```toml
-legume-numeric = { version = "0.8", features = ["candle", "mcmc"] }
+legume-numeric = { version = "0.9", features = ["candle", "mcmc"] }
 # GPU (optional):
 # features = ["candle", "mcmc", "cuda"]  # or "metal"
 ```

@@ -200,8 +200,7 @@ fn poisson_draw(rates: &Mat, seed: u64) -> Mat {
 /// keeps this in a different sub-stream from the Poisson thinning draw.
 #[must_use]
 pub fn epoch_seed(seed: u64, epoch: usize, level: usize) -> u64 {
-    let salt = ((epoch as u64) << 32) | (level as u64);
-    mix_seed(crate::matrix::rand_util::name_seed(seed, "mask"), salt)
+    crate::matrix::rand_util::stream_seed(seed, "mask", epoch, level)
 }
 
 /// The decoder's module-level view of ONE dense minibatch.

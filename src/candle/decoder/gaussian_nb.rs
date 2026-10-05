@@ -188,30 +188,6 @@ impl DecoderModuleT for GaussianNbDecoder {
     fn dim_latent(&self) -> usize {
         self.n_latent
     }
-
-    /// ESS log-likelihood closure for the Gaussian latent: multinomial
-    /// `Σ_d x_d · log π_d` with `π = softmax_d(z·W + b)` on detached weights.
-    /// Overrides the simplex-`θ` default (which would `softmax(z)` first).
-    fn build_ess_llik<'a>(
-        &'a self,
-        x_nd: &'a Tensor,
-        _topic_smoothing: f64,
-    ) -> Result<EssLlikFn<'a>> {
-        // `[n_latent, D]`, contiguous — transposed once here, not per call.
-        let w_kd = self.decoder.weight().detach().t()?.contiguous()?;
-        let bias_d = self.decoder.bias().map(Tensor::detach);
-        let x_pos = x_nd.clamp(0.0, f64::INFINITY)?;
-
-        Ok(Box::new(move |z_nk: &Tensor| {
-            let logits = z_nk.matmul(&w_kd)?; // [N, D]
-            let logits = match &bias_d {
-                Some(b) => logits.broadcast_add(&b.unsqueeze(0)?)?,
-                None => logits,
-            };
-            let log_pi = ops::log_softmax(&logits, logits.rank() - 1)?;
-            x_pos.mul(&log_pi)?.sum(x_pos.rank() - 1)
-        }))
-    }
 }
 
 #[cfg(test)]

@@ -4,11 +4,8 @@
 //! - [`delta_topic`]: delta-parameterized topic decoder
 //! - [`joint_topic`]: paired/multi-view topic decoder
 //! - [`nb_mixture`]: ambient-RNA NB mixture topic decoder
-//! - [`poisson`]: simple Poisson decoder
-//! - [`bipartite`]: bipartite link-community decoder
 //! - [`dyn_decoder`]: trait-object wrapper for runtime decoder selection
 
-pub mod bipartite;
 pub mod coarsening_map;
 pub mod delta_topic;
 pub mod dyn_decoder;
@@ -16,21 +13,14 @@ pub mod gaussian_nb;
 pub mod joint_topic;
 pub mod masked_etm;
 pub mod nb_mixture;
-pub mod poisson;
-pub mod query_decoder;
 pub mod topic;
 
-pub use bipartite::{
-    BipartiteDecoder, BipartiteLikelihood, BlockModelMultinomial, GaussianLikelihood, NbLikelihood,
-    PoissonLikelihood, SymmetricMultinomial,
-};
 pub use delta_topic::DeltaTopicDecoder;
 pub use dyn_decoder::{create_dyn_decoder, DynDecoderModuleT};
 pub use gaussian_nb::GaussianNbDecoder;
 pub use joint_topic::JointTopicDecoder;
 pub use masked_etm::{EmbeddedNbTopicDecoder, MaskedNbTarget};
 pub use nb_mixture::NbMixtureTopicDecoder;
-pub use poisson::PoissonDecoder;
 pub use topic::{MultinomTopicDecoder, NbTopicDecoder};
 
 /// `(start, len)` pairs tiling `n_features` in slices of at most `chunk`.

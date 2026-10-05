@@ -1,6 +1,6 @@
 use crate::candle::decoder::nb_mixture::{NbMixtureTopicDecoder, DECODER_NAME as NBMIXTURE_NAME};
 use crate::candle::decoder::topic::{MultinomTopicDecoder, NbTopicDecoder};
-use crate::candle::traits::model::{DecoderModuleT, EssLlikFn};
+use crate::candle::traits::model::DecoderModuleT;
 use candle_core::{Result, Tensor};
 use candle_nn::VarBuilder;
 
@@ -15,7 +15,6 @@ pub trait DynDecoderModuleT: Send + Sync {
     fn forward_llik(&self, z_nk: &Tensor, x_nd: &Tensor) -> Result<(Tensor, Tensor)>;
     fn dim_obs(&self) -> usize;
     fn dim_latent(&self) -> usize;
-    fn build_ess_llik<'a>(&'a self, x_nd: &'a Tensor, smoothing: f64) -> Result<EssLlikFn<'a>>;
     fn decoder_name(&self) -> &str;
 }
 
@@ -42,9 +41,6 @@ macro_rules! impl_dyn_decoder {
             }
             fn dim_latent(&self) -> usize {
                 DecoderModuleT::dim_latent(self)
-            }
-            fn build_ess_llik<'a>(&'a self, x_nd: &'a Tensor, s: f64) -> Result<EssLlikFn<'a>> {
-                DecoderModuleT::build_ess_llik(self, x_nd, s)
             }
             fn decoder_name(&self) -> &str {
                 $name

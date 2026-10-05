@@ -21,11 +21,59 @@ pub fn gaussian_kl_loss(z_mean: &Tensor, z_lnvar: &Tensor) -> Result<Tensor> {
 /// At eval time returns mean (the posterior mode) without sampling.
 pub fn gaussian_reparameterize(z_mean: &Tensor, z_lnvar: &Tensor, train: bool) -> Result<Tensor> {
     if train {
-        let eps = Tensor::randn_like(z_mean, 0., 1.)?;
+        let eps = standard_normal_like(z_mean)?;
         z_mean + (z_lnvar * 0.5)?.exp()? * eps
     } else {
         Ok(z_mean.clone())
     }
+}
+
+thread_local! {
+    static NOISE: std::cell::RefCell<Option<rand::rngs::StdRng>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Seed this thread's training noise ([`standard_normal_like`], which
+/// [`gaussian_reparameterize`] draws `ε` from) until the returned guard is
+/// dropped. candle cannot seed its CPU generator, so a trainer that wants a
+/// run to replay holds the guard for the length of its run; the draws then
+/// follow the order of its steps, and nothing is left behind for a later fit
+/// on the thread, which draws from candle's generator again.
+#[must_use = "the stream is seeded only while the guard lives"]
+pub fn seed_noise(seed: u64) -> NoiseGuard {
+    use rand::SeedableRng;
+    NOISE.with(|n| *n.borrow_mut() = Some(rand::rngs::StdRng::seed_from_u64(seed)));
+    NoiseGuard(())
+}
+
+/// Clears this thread's seeded noise when dropped (see [`seed_noise`]).
+pub struct NoiseGuard(());
+
+impl Drop for NoiseGuard {
+    fn drop(&mut self) {
+        NOISE.with(|n| *n.borrow_mut() = None);
+    }
+}
+
+/// Standard normal noise shaped like `t`: from this thread's seeded stream
+/// on the CPU while [`seed_noise`]'s guard lives, from candle's generator
+/// otherwise. A GPU draws on the device, as its kernels do not replay bit
+/// for bit anyway.
+pub fn standard_normal_like(t: &Tensor) -> Result<Tensor> {
+    use rand_distr::{Distribution, StandardNormal};
+    if t.device().is_cpu() {
+        let draw = NOISE.with(|n| {
+            n.borrow_mut().as_mut().map(|rng| {
+                (0..t.elem_count())
+                    .map(|_| StandardNormal.sample(rng))
+                    .collect::<Vec<f64>>()
+            })
+        });
+        if let Some(draw) = draw {
+            return Tensor::from_vec(draw, t.shape(), t.device())?.to_dtype(t.dtype());
+        }
+    }
+    Tensor::randn_like(t, 0., 1.)
 }
 
 /// Negative log-probability of z under N(mean, diag(exp(lnvar))), up to constant.

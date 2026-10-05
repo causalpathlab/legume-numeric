@@ -9,7 +9,6 @@ pub mod model;
 
 pub use indexed::IndexedEncoderT;
 pub use model::{
-    joint_multinomial_llik, DecoderModuleT, EncoderModuleT, EssLlikFn, JointDecoderModuleT,
-    JointEncoderModuleT, MatchedDecoderData, MatchedDecoderModuleT, MatchedDecoderRecon,
-    MatchedEncoderData, MatchedEncoderLatent, MatchedEncoderModuleT, NewDecoder,
+    joint_multinomial_llik, DecoderModuleT, EncoderModuleT, JointDecoderModuleT,
+    JointEncoderModuleT, NewDecoder,
 };

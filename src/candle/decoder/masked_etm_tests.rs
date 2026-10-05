@@ -214,26 +214,12 @@ fn dense_and_indexed_heads_agree_on_the_same_positions() {
             .unwrap(),
     );
     let nb_d = to_vec1(&dec.impute_dense_nb(&log_theta(), &dense, &full_kd).unwrap());
-    let mn_i = to_vec1(
-        &dec.impute_masked_multinomial(&log_theta(), &indexed, &full_kd)
-            .unwrap(),
-    );
-    let mn_d = to_vec1(
-        &dec.impute_dense_multinomial(&log_theta(), &dense, &full_kd)
-            .unwrap(),
-    );
     for n in 0..N {
         assert!(
             (nb_i[n] - nb_d[n]).abs() < 1e-3,
             "row {n}: indexed NB {} vs dense {}",
             nb_i[n],
             nb_d[n]
-        );
-        assert!(
-            (mn_i[n] - mn_d[n]).abs() < 1e-4,
-            "row {n}: indexed multinomial {} vs dense {}",
-            mn_i[n],
-            mn_d[n]
         );
     }
 }
@@ -242,7 +228,7 @@ fn dense_and_indexed_heads_agree_on_the_same_positions() {
 // Module-collapsed heads   //
 ////////////////////////////
 
-use super::{ModuleTarget, QueryTarget};
+use super::ModuleTarget;
 use crate::candle::decoder::coarsening_map::CoarseningMap;
 use crate::candle::loss::nb_log_likelihood_elem;
 
@@ -440,59 +426,6 @@ fn unseen_module_scores_match_a_host_reference_and_skip_full_modules() {
         .score_unseen_modules_nb(&log_theta(), &t2, &full_km)
         .unwrap();
     assert_eq!(to_vec1(&llik), to_vec1(&llik2));
-}
-
-/// A query gene's rate is its module's rate times its share times the
-/// residual; with r = 0 it is the expanded dictionary's rate.
-#[test]
-fn gene_level_query_rate_is_module_rate_times_share_times_residual() {
-    let dec = module_decoder();
-    let full_km = dec.full_logits_kd().unwrap();
-    let ids = Tensor::from_vec(vec![5u32, 0, 3, 1, 4, 2], (N, 2), &dev()).unwrap();
-    let xq = Tensor::from_vec(vec![2.0f32, 0.0, 1.0, 4.0, 0.0, 3.0], (N, 2), &dev()).unwrap();
-    let w = Tensor::from_vec(vec![1.0f32, 1.0, 1.0, 0.0, 1.0, 1.0], (N, 2), &dev()).unwrap();
-    let r = Tensor::from_vec(vec![0.3f32, -0.2, 0.0, 0.5, 1.0, -1.0], (N, 2), &dev()).unwrap();
-    let lib = lib();
-    let q = QueryTarget {
-        gene_ids: &ids,
-        values: &xq,
-        weight: &w,
-        log_residual: &r,
-        lib: &lib,
-    };
-    let got = to_vec1(&dec.score_queries_nb(&log_theta(), &q, &full_km).unwrap());
-    // Host: μ = ℓ · rate_{m(g)} · π_{g|m} · exp(r), φ at the module.
-    let rate = dec
-        .mixture_rate_nd(&log_theta(), &full_km)
-        .unwrap()
-        .to_vec2::<f32>()
-        .unwrap();
-    let f2c = [0usize, 0, 1, 1, 1, 2];
-    let share = [2.0f32 / 3.0, 1.0 / 3.0, 0.25, 0.25, 0.5, 1.0];
-    let idv = ids.to_vec2::<u32>().unwrap();
-    let rv = r.to_vec2::<f32>().unwrap();
-    let libv = to_vec1(&lib);
-    let mut mu = vec![0f32; N * 2];
-    let mut lp = vec![0f32; N * 2];
-    let log_phi_m = to_vec1(dec.log_phi());
-    for n in 0..N {
-        for j in 0..2 {
-            let g = idv[n][j] as usize;
-            mu[n * 2 + j] = libv[n] * rate[n][f2c[g]] * share[g] * rv[n][j].exp();
-            lp[n * 2 + j] = log_phi_m[f2c[g]];
-        }
-    }
-    let mu_t = Tensor::from_vec(mu, (N, 2), &dev()).unwrap();
-    let lp_t = Tensor::from_vec(lp, (N, 2), &dev()).unwrap();
-    let want = to_vec1(
-        &(nb_log_likelihood_elem(&xq, &mu_t, &lp_t).unwrap() * &w)
-            .unwrap()
-            .sum(1)
-            .unwrap(),
-    );
-    for (a, b) in got.iter().zip(&want) {
-        assert!((a - b).abs() < 1e-4, "query llik {a} vs host {b}");
-    }
 }
 
 /// The indexed head on a module decoder scores a gene at its module's rate

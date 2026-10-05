@@ -21,11 +21,46 @@ pub fn gaussian_kl_loss(z_mean: &Tensor, z_lnvar: &Tensor) -> Result<Tensor> {
 /// At eval time returns mean (the posterior mode) without sampling.
 pub fn gaussian_reparameterize(z_mean: &Tensor, z_lnvar: &Tensor, train: bool) -> Result<Tensor> {
     if train {
-        let eps = Tensor::randn_like(z_mean, 0., 1.)?;
+        let eps = match seeded_normal_like(z_mean)? {
+            Some(eps) => eps,
+            None => Tensor::randn_like(z_mean, 0., 1.)?,
+        };
         z_mean + (z_lnvar * 0.5)?.exp()? * eps
     } else {
         Ok(z_mean.clone())
     }
+}
+
+thread_local! {
+    static NOISE: std::cell::RefCell<Option<rand::rngs::StdRng>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Seed this thread's training noise ([`gaussian_reparameterize`]'s `ε`).
+/// candle cannot seed its CPU generator, so a trainer that wants a run to
+/// replay calls this once before its first step; the draws then follow the
+/// order of the steps. Until it is called, `ε` comes from candle's generator.
+pub fn seed_noise(seed: u64) {
+    use rand::SeedableRng;
+    NOISE.with(|n| *n.borrow_mut() = Some(rand::rngs::StdRng::seed_from_u64(seed)));
+}
+
+/// Standard normal noise shaped like `t` from this thread's seeded stream,
+/// or `None` when [`seed_noise`] has not been called.
+fn seeded_normal_like(t: &Tensor) -> Result<Option<Tensor>> {
+    use rand_distr::{Distribution, StandardNormal};
+    NOISE.with(|n| {
+        let mut n = n.borrow_mut();
+        let Some(rng) = n.as_mut() else {
+            return Ok(None);
+        };
+        let draw: Vec<f32> = (0..t.elem_count())
+            .map(|_| StandardNormal.sample(rng))
+            .collect();
+        Tensor::from_vec(draw, t.shape(), t.device())?
+            .to_dtype(t.dtype())
+            .map(Some)
+    })
 }
 
 /// Negative log-probability of z under N(mean, diag(exp(lnvar))), up to constant.

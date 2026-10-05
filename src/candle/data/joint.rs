@@ -23,7 +23,8 @@ pub trait JointDataLoader {
 
     fn num_minibatch(&self) -> usize;
 
-    fn shuffle_minibatch(&mut self, batch_size: usize) -> anyhow::Result<()>;
+    /// Resample the minibatches, every draw from `seed`.
+    fn shuffle_minibatch(&mut self, batch_size: usize, seed: u64) -> anyhow::Result<()>;
 }
 
 pub struct JointInMemoryArgs<'a, D>
@@ -221,7 +222,11 @@ impl JointInMemoryData {
     }
 
     /// Shuffle and cache minibatches for the device-resident path.
-    pub fn shuffle_minibatch_on_device(&mut self, batch_size: usize) -> anyhow::Result<()> {
+    pub fn shuffle_minibatch_on_device(
+        &mut self,
+        batch_size: usize,
+        seed: u64,
+    ) -> anyhow::Result<()> {
         if self.device_input.is_empty() {
             return Err(anyhow::anyhow!(
                 "call from_device before shuffle_minibatch_on_device"
@@ -241,7 +246,7 @@ impl JointInMemoryData {
 
         let nbatch = n.div_ceil(batch_size);
         let ntot = nbatch * batch_size;
-        let idx: Vec<u32> = bootstrap_indices(n, ntot);
+        let idx: Vec<u32> = bootstrap_indices(n, ntot, seed);
         let idx_tensor = Tensor::from_vec(idx, ntot, &dev)?;
 
         let shuffled_input: Vec<Tensor> = self
@@ -403,8 +408,8 @@ impl JointDataLoader for JointInMemoryData {
         self.minibatches.chunks.len()
     }
 
-    fn shuffle_minibatch(&mut self, batch_size: usize) -> anyhow::Result<()> {
-        self.minibatches.shuffle_minibatch(batch_size);
+    fn shuffle_minibatch(&mut self, batch_size: usize, seed: u64) -> anyhow::Result<()> {
+        self.minibatches.shuffle_minibatch(batch_size, seed);
 
         let ntypes = self.input_data.len();
 
@@ -489,7 +494,7 @@ mod tests {
             },
             &dev,
         )?;
-        loader.shuffle_minibatch_on_device(3)?;
+        loader.shuffle_minibatch_on_device(3, 7)?;
         assert_eq!(loader.num_minibatch(), 2);
         for b in 0..loader.num_minibatch() {
             let mb = loader.minibatch_cached(b);

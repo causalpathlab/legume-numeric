@@ -18,5 +18,5 @@ pub use linear::{
     logsumexp_forward, non_neg_linear, sparsemax_linear, AggregateLinear, NonNegLinear,
     SoftmaxLinear, SparsemaxLinear,
 };
-pub use seed_vars::seed_uniform_vars;
+pub use seed_vars::{seed_declared_vars, seed_uniform_vars};
 pub use soft_clamp::{soft_clamp, MASKED_LOGIT_CLAMP};

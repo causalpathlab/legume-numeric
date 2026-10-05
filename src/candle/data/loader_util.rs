@@ -1,3 +1,4 @@
+use crate::matrix::rand_util::mix_seed;
 use crate::matrix::traits::ConvertMatOps;
 use anyhow::anyhow;
 use candle_core::{Device, Tensor};
@@ -30,21 +31,21 @@ pub(crate) fn upload_columns_as_rows(
     )?)
 }
 
-/// Bootstrap-sample `ntot` indices from `[0, n)` with replacement, in
-/// parallel. Shared by `Minibatches::shuffle_minibatch` (CPU path,
-/// `usize`) and the device-resident loaders (`u32`).
-pub(crate) fn bootstrap_indices<I>(n: usize, ntot: usize) -> Vec<I>
+/// Bootstrap-sample `ntot` indices from `[0, n)` with replacement, drawn
+/// from `seed` alone, so a run replays whatever the thread count. Shared by
+/// `Minibatches::shuffle_minibatch` (CPU path, `usize`) and the
+/// device-resident loaders (`u32`).
+pub(crate) fn bootstrap_indices<I>(n: usize, ntot: usize, seed: u64) -> Vec<I>
 where
     I: TryFrom<usize> + Send,
     <I as TryFrom<usize>>::Error: std::fmt::Debug,
 {
+    use rand::{rngs::StdRng, SeedableRng};
     use rand_distr::{Distribution, Uniform};
     let unif = Uniform::new(0usize, n).expect("unif [0 .. n)");
+    let mut rng = StdRng::seed_from_u64(seed);
     (0..ntot)
-        .into_par_iter()
-        .map_init(rand::rng, |rng, _| {
-            I::try_from(unif.sample(rng)).expect("index fits in target type")
-        })
+        .map(|_| I::try_from(unif.sample(&mut rng)).expect("index fits in target type"))
         .collect()
 }
 
@@ -65,18 +66,20 @@ impl Minibatches {
     ///
     /// Not a partition: indices are drawn *with replacement* via
     /// `bootstrap_indices`, so one pass over `chunks` is a bootstrap
-    /// cover — some samples repeat, some are skipped.
-    pub fn shuffle_minibatch(&mut self, batch_size: usize) {
-        let mut rng = rand::rng();
+    /// cover — some samples repeat, some are skipped. Every draw comes from
+    /// `seed`, and the chunks keep their order, so a run replays.
+    pub fn shuffle_minibatch(&mut self, batch_size: usize, seed: u64) {
+        use rand::{rngs::StdRng, SeedableRng};
+        let mut rng = StdRng::seed_from_u64(seed);
         self.samples.shuffle(&mut rng);
 
         let nbatch = (self.size() + batch_size) / batch_size;
         let ntot = nbatch * batch_size;
 
-        let indexes: Vec<usize> = bootstrap_indices(self.size(), ntot);
+        let indexes: Vec<usize> = bootstrap_indices(self.size(), ntot, mix_seed(seed, 1));
 
         self.chunks = (0..nbatch)
-            .par_bridge()
+            .into_par_iter()
             .map(|b| {
                 let lb = b * batch_size;
                 let ub = (b + 1) * batch_size;

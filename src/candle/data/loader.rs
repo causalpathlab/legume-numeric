@@ -30,7 +30,8 @@ pub trait DataLoader {
 
     fn num_minibatch(&self) -> usize;
 
-    fn shuffle_minibatch(&mut self, batch_size: usize) -> anyhow::Result<()>;
+    /// Resample the minibatches, every draw from `seed`.
+    fn shuffle_minibatch(&mut self, batch_size: usize, seed: u64) -> anyhow::Result<()>;
 }
 
 ///
@@ -159,7 +160,11 @@ impl InMemoryData {
     /// Shuffle and cache minibatches for the device-resident path.
     /// Single index-select on device produces the shuffled `[ntot, D]`
     /// block; per-minibatch tensors are zero-copy `narrow` views.
-    pub fn shuffle_minibatch_on_device(&mut self, batch_size: usize) -> anyhow::Result<()> {
+    pub fn shuffle_minibatch_on_device(
+        &mut self,
+        batch_size: usize,
+        seed: u64,
+    ) -> anyhow::Result<()> {
         let device_input = self.device_input.as_ref().ok_or_else(|| {
             anyhow::anyhow!("call from_device before shuffle_minibatch_on_device")
         })?;
@@ -177,7 +182,7 @@ impl InMemoryData {
 
         let nbatch = n.div_ceil(batch_size);
         let ntot = nbatch * batch_size;
-        let idx: Vec<u32> = bootstrap_indices(n, ntot);
+        let idx: Vec<u32> = bootstrap_indices(n, ntot, seed);
         let idx_tensor = Tensor::from_vec(idx, ntot, dev)?;
 
         let shuffled_input = device_input.index_select(&idx_tensor, 0)?;
@@ -325,12 +330,12 @@ impl DataLoader for InMemoryData {
         self.minibatches.chunks.len()
     }
 
-    fn shuffle_minibatch(&mut self, batch_size: usize) -> anyhow::Result<()> {
+    fn shuffle_minibatch(&mut self, batch_size: usize, seed: u64) -> anyhow::Result<()> {
         /////////////////////
         // shuffle indexes //
         /////////////////////
 
-        self.minibatches.shuffle_minibatch(batch_size);
+        self.minibatches.shuffle_minibatch(batch_size, seed);
 
         self.shuffled_input_data = Some(vec![]);
 
@@ -409,7 +414,7 @@ mod tests {
             &dev,
         )?;
 
-        loader.shuffle_minibatch_on_device(4)?;
+        loader.shuffle_minibatch_on_device(4, 7)?;
         // ceil(7/4) = 2 minibatches
         assert_eq!(loader.num_minibatch(), 2);
         for b in 0..loader.num_minibatch() {

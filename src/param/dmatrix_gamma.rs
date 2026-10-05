@@ -193,6 +193,15 @@ impl Inference for GammaMatrix {
         Ok(Self::Mat::from_vec(self.nrows(), self.ncols(), sampled))
     }
 
+    fn posterior_sample_seeded(&self, seed: u64) -> anyhow::Result<Self::Mat> {
+        let sampled = super::traits::gamma_sample_seeded(
+            self.a_stat.as_slice(),
+            self.b_stat.as_slice(),
+            seed,
+        )?;
+        Ok(Self::Mat::from_vec(self.nrows(), self.ncols(), sampled))
+    }
+
     fn posterior_log_sample(&self, seed: u64) -> anyhow::Result<Self::Mat> {
         use rand::rngs::SmallRng;
         use rand::SeedableRng;

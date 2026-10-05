@@ -170,6 +170,22 @@ impl Inference for GammaMatrix {
         )?)
     }
 
+    fn posterior_sample_seeded(&self, seed: u64) -> anyhow::Result<Self::Mat> {
+        let a = self
+            .a_stat
+            .as_slice()
+            .ok_or(anyhow::anyhow!("failed to take slice on a_stat"))?;
+        let b = self
+            .b_stat
+            .as_slice()
+            .ok_or(anyhow::anyhow!("failed to take slice on b_stat"))?;
+        let sampled = super::traits::gamma_sample_seeded(a, b, seed)?;
+        Ok(Self::Mat::from_shape_vec(
+            (self.nrows(), self.ncols()),
+            sampled,
+        )?)
+    }
+
     fn posterior_log_sample(&self, seed: u64) -> anyhow::Result<Self::Mat> {
         use rand::rngs::SmallRng;
         use rand::SeedableRng;

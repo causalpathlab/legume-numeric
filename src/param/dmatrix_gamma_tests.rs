@@ -230,3 +230,49 @@ fn set_row_prior_wrong_length_panics() {
     let mut p = GammaMatrix::new((2, 1), 1.0, 1.0);
     p.set_row_prior(&rows(&[1.0]), &rows(&[1.0]));
 }
+
+/// A posterior whose rows have rates spread over two orders of magnitude,
+/// large enough to span several sampling chunks.
+fn spread_posterior() -> GammaMatrix {
+    let (r, c) = (60, 50);
+    let mut p = GammaMatrix::new((r, c), 1.0, 1.0);
+    let a = DMatrix::<f32>::from_fn(r, c, |i, j| (1 + (i * 7 + j * 3) % 40) as f32);
+    let b = DMatrix::<f32>::from_fn(r, c, |i, _| 1.0 + i as f32 * 0.5);
+    p.update_stat(&a, &b);
+    p.calibrate();
+    p
+}
+
+/// A seeded posterior draw replays: the same seed gives the same matrix,
+/// on one thread or many, and another seed gives another.
+#[test]
+fn a_seeded_posterior_sample_replays() {
+    let p = spread_posterior();
+    let draw = |threads: usize, seed: u64| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+            .install(|| p.posterior_sample_seeded(seed).unwrap())
+    };
+    let a = draw(1, 11);
+    assert_eq!(a, draw(4, 11), "independent of the thread count");
+    assert_eq!(a, draw(4, 11), "the same seed, the same draw");
+    assert_ne!(a, draw(4, 12), "another seed, another draw");
+}
+
+/// The seeded draw is the posterior's: averaged over seeds, each element
+/// sits at its posterior mean.
+#[test]
+fn a_seeded_posterior_sample_centres_on_the_posterior_mean() {
+    let p = spread_posterior();
+    let n = 200;
+    let mut acc = DMatrix::<f32>::zeros(p.nrows(), p.ncols());
+    for s in 0..n {
+        acc += p.posterior_sample_seeded(s).unwrap();
+    }
+    acc /= n as f32;
+    let mean = p.posterior_mean();
+    let rel = (&acc - mean).abs().component_div(mean).max();
+    assert!(rel < 0.25, "largest relative gap {rel}");
+}

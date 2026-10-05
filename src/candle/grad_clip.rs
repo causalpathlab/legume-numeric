@@ -26,32 +26,38 @@ pub fn clipped_backward_step<O: Optimizer>(
     Ok(norm)
 }
 
+/// `Σ ‖g‖²` over every gradient in `grads`, the same whatever order the store
+/// yields them in. The store is a hash map, so its order changes between
+/// runs, and a float sum taken in that order changes in its last bits; a
+/// clip by it then steers two runs of one seed apart. The per-parameter
+/// sums are stacked on the device, read in one host sync, and added in
+/// sorted order in `f64`.
+pub(crate) fn global_sumsq(grads: &GradStore) -> Result<f64> {
+    let parts: Vec<Tensor> = grads
+        .get_ids()
+        .filter_map(|id| grads.get_id(*id))
+        .map(|g| g.sqr()?.sum_all()?.to_dtype(candle_core::DType::F32))
+        .collect::<Result<_>>()?;
+    if parts.is_empty() {
+        return Ok(0.0);
+    }
+    let mut sums: Vec<f32> = Tensor::stack(&parts, 0)?.to_vec1()?;
+    sums.sort_by(f32::total_cmp);
+    Ok(sums.iter().map(|&s| f64::from(s)).sum())
+}
+
 /// Clip every gradient in `grads` to a global L2 norm of `max_norm`. No-op when
 /// `max_norm <= 0` (clipping disabled) or the global norm is already within
 /// bound. Returns the pre-clip global norm (for logging / diagnostics).
 ///
-/// The per-parameter sums of squares are accumulated **on-device** and read
-/// back as a single scalar (one host sync, not one per parameter).
+/// One host read of the per-parameter sums of squares ([`global_sumsq`]).
 pub fn clip_grad_global_norm(grads: &mut GradStore, max_norm: f64) -> Result<f64> {
     if max_norm <= 0.0 {
         return Ok(0.0);
     }
     // Release the immutable `get_ids` borrow before the mutable rescale pass.
     let ids: Vec<_> = grads.get_ids().copied().collect();
-    let mut sumsq: Option<Tensor> = None;
-    for id in &ids {
-        if let Some(g) = grads.get_id(*id) {
-            let s = g.sqr()?.sum_all()?;
-            sumsq = Some(match sumsq {
-                None => s,
-                Some(t) => (t + s)?,
-            });
-        }
-    }
-    let norm = match sumsq {
-        Some(t) => (t.to_scalar::<f32>()? as f64).sqrt(),
-        None => 0.0,
-    };
+    let norm = global_sumsq(grads)?.sqrt();
     if norm > max_norm && norm > 0.0 {
         let scale = max_norm / norm;
         for id in &ids {

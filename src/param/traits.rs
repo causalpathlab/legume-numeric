@@ -17,6 +17,17 @@ pub trait Inference {
     fn posterior_log_mean(&self) -> &Self::Mat;
     fn posterior_log_sd(&self) -> &Self::Mat;
     fn posterior_sample(&self) -> anyhow::Result<Self::Mat>;
+    /// [`Self::posterior_sample`] drawn from `seed`: the same seed gives the
+    /// same matrix, whatever the thread count, so a fit trained on it
+    /// replays. Seeded per fixed-width chunk, like
+    /// [`Self::posterior_log_sample`].
+    ///
+    /// The default refuses: an implementation outside this crate that
+    /// predates the method has no seeded draw.
+    fn posterior_sample_seeded(&self, seed: u64) -> anyhow::Result<Self::Mat> {
+        let _ = seed;
+        anyhow::bail!("this parameter type has no seeded posterior sample")
+    }
     /// Draw a fresh sample of `log λ` per element. Delta-method
     /// approximation: `log λ ≈ Normal(posterior_log_mean,
     /// posterior_log_sd²)`. Caller must have called
@@ -86,4 +97,32 @@ pub trait TwoStatParam {
     fn map_calibrate_sd(&mut self);
     fn map_calibrate_log_mean(&mut self);
     fn map_calibrate_log_sd(&mut self);
+}
+
+/// One Gamma draw per `(a, b)` pair, shape `a + ε` and rate `b + ε`, from
+/// `seed`: one generator per fixed-width chunk, so the draw is a function of
+/// the seed and the data shape, not of how rayon splits the work.
+pub(crate) fn gamma_sample_seeded(a: &[f32], b: &[f32], seed: u64) -> anyhow::Result<Vec<f32>> {
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+    use rand_distr::{Distribution, Gamma};
+    use rayon::prelude::*;
+    const CHUNK: usize = 1024;
+    let eps = 1e-8;
+    let mut sampled = vec![0.0f32; a.len()];
+    sampled
+        .par_chunks_mut(CHUNK)
+        .enumerate()
+        .try_for_each(|(ci, out)| -> anyhow::Result<()> {
+            let mut rng =
+                SmallRng::seed_from_u64(seed ^ (ci as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let base = ci * CHUNK;
+            for (k, o) in out.iter_mut().enumerate() {
+                let shape = a[base + k] + eps;
+                let scale = (b[base + k] + eps).recip();
+                *o = Gamma::new(shape, scale)?.sample(&mut rng);
+            }
+            Ok(())
+        })?;
+    Ok(sampled)
 }

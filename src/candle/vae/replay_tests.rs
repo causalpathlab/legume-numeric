@@ -73,7 +73,9 @@ fn dense_run(train_seed: u64) -> (Bits, Bits) {
         minibatch_size: 16,
         learning_rate: 0.01,
         topic_smoothing: 0.0,
-        grad_clip: 0.0,
+        // Clipped, as the topic and vae fits are: the clip reads a global
+        // norm, which must not depend on the gradient store's order.
+        grad_clip: 1.0,
         stop: &stop,
         seed: train_seed,
         loss_hook: None,

@@ -51,6 +51,17 @@ pub fn name_seed(base: u64, name: &str) -> u64 {
 /// Draw `n` i.i.d. `f32` samples from `dist`, deterministically given `seed`
 /// and independent of the thread schedule. See the module docs for why this is
 /// reproducible where `into_par_iter().map_init(rand::rng, ...)` is not.
+/// The seed of one epoch's draws at one level, in the sub-stream `stream` of
+/// `seed`: a draw depends only on the run's seed and where in the schedule it
+/// happens.
+#[must_use]
+pub fn stream_seed(seed: u64, stream: &str, epoch: usize, level: usize) -> u64 {
+    mix_seed(
+        name_seed(seed, stream),
+        ((epoch as u64) << 32) | level as u64,
+    )
+}
+
 pub fn collect_f32_seeded<D>(n: usize, dist: D, seed: u64) -> Vec<f32>
 where
     D: Distribution<f32> + Clone + Send + Sync,

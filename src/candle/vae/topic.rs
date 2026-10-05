@@ -53,12 +53,6 @@ pub struct TrainConfig<'a> {
 /// Per-level training triple: `(encoder input, optional batch null, decoder target)`.
 pub type LevelData<'a> = (&'a Mat, Option<&'a Mat>, &'a Mat);
 
-/// The minibatch draw of one epoch at one level: a sub-stream of the run's
-/// seed keyed on both, so the draws replay whatever the order levels run in.
-fn epoch_seed(seed: u64, epoch: usize, level: usize) -> u64 {
-    crate::matrix::rand_util::mix_seed(seed, ((epoch as u64) << 32) | level as u64)
-}
-
 fn build_device_loaders(
     level_data: &[LevelData],
     dev: &Device,
@@ -114,7 +108,8 @@ where
     )?;
     let prog_bar = labeled_bar("Epochs", total_epochs as u64);
     // The reparameterization noise replays with the minibatch draws.
-    crate::candle::loss::seed_noise(crate::matrix::rand_util::name_seed(config.seed, "noise"));
+    let _noise =
+        crate::candle::loss::seed_noise(crate::matrix::rand_util::name_seed(config.seed, "noise"));
 
     let mut llik_trace = Vec::with_capacity(total_epochs);
     let mut kl_trace = Vec::with_capacity(total_epochs);
@@ -133,7 +128,10 @@ where
             let cap = config.minibatch_size;
             crate::candle::device::auto_chunk_size(config.dev, cap, 16.min(cap), frac, |n| {
                 loader
-                    .shuffle_minibatch_on_device(n, epoch_seed(config.seed, 0, 0))
+                    .shuffle_minibatch_on_device(
+                        n,
+                        crate::matrix::rand_util::stream_seed(config.seed, "batch", 0, 0),
+                    )
                     .map_err(|e| candle_core::Error::Msg(e.to_string()))?;
                 if loader.num_minibatch() == 0 {
                     return Err(candle_core::Error::Msg("probe loader is empty".into()));
@@ -155,7 +153,7 @@ where
         for (level, loader) in data_loaders.iter_mut().enumerate() {
             loader.shuffle_minibatch_on_device(
                 minibatch_size,
-                epoch_seed(config.seed, epoch, level),
+                crate::matrix::rand_util::stream_seed(config.seed, "batch", epoch, level),
             )?;
         }
 
@@ -265,7 +263,8 @@ pub fn train_mixed_multi_decoder<Enc: EncoderModuleT>(
     )?;
     let prog_bar = labeled_bar("Epochs", total_epochs as u64);
     // The reparameterization noise replays with the minibatch draws.
-    crate::candle::loss::seed_noise(crate::matrix::rand_util::name_seed(config.seed, "noise"));
+    let _noise =
+        crate::candle::loss::seed_noise(crate::matrix::rand_util::name_seed(config.seed, "noise"));
 
     let mut llik_trace = Vec::with_capacity(total_epochs);
     let mut kl_trace = Vec::with_capacity(total_epochs);
@@ -279,7 +278,10 @@ pub fn train_mixed_multi_decoder<Enc: EncoderModuleT>(
             let cap = config.minibatch_size;
             crate::candle::device::auto_chunk_size(config.dev, cap, 16.min(cap), frac, |n| {
                 loader
-                    .shuffle_minibatch_on_device(n, epoch_seed(config.seed, 0, 0))
+                    .shuffle_minibatch_on_device(
+                        n,
+                        crate::matrix::rand_util::stream_seed(config.seed, "batch", 0, 0),
+                    )
                     .map_err(|e| candle_core::Error::Msg(e.to_string()))?;
                 if loader.num_minibatch() == 0 {
                     return Err(candle_core::Error::Msg("probe loader is empty".into()));
@@ -304,7 +306,7 @@ pub fn train_mixed_multi_decoder<Enc: EncoderModuleT>(
         for (level, loader) in data_loaders.iter_mut().enumerate() {
             loader.shuffle_minibatch_on_device(
                 minibatch_size,
-                epoch_seed(config.seed, epoch, level),
+                crate::matrix::rand_util::stream_seed(config.seed, "batch", epoch, level),
             )?;
         }
 

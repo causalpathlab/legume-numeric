@@ -1,7 +1,7 @@
 //! Seeded initialisation of a `VarMap`'s linear weights.
 
 use crate::matrix::rand_util::name_seed;
-use candle_core::{Result, Tensor};
+use candle_core::{DType, Result, Tensor};
 use candle_nn::VarMap;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -53,37 +53,45 @@ pub fn seed_uniform_vars(varmap: &VarMap, seed: u64, skip: impl Fn(&str) -> bool
 /// Vars for which `skip(name)` holds keep their current values.
 pub fn seed_declared_vars(varmap: &VarMap, seed: u64, skip: impl Fn(&str) -> bool) -> Result<()> {
     use rand_distr::{Distribution, Normal};
+    // `stem.suffix` or `suffix` itself: a name's last path components, not
+    // any string that ends the same way.
+    let at_end = |name: &str, suffix: &str| name == suffix || name.ends_with(&format!(".{suffix}"));
     let tbl = varmap.data().lock().unwrap();
     for (name, var) in tbl.iter() {
         if skip(name) {
             continue;
         }
-        let values: Vec<f32> = var.flatten_all()?.to_vec1()?;
-        if values.windows(2).all(|w| w[0] == w[1]) {
-            continue;
-        }
         let dims = var.dims().to_vec();
-        let n = values.len();
-        let mut rng = StdRng::seed_from_u64(name_seed(seed, name));
-        let normal = |std: f64, rng: &mut StdRng| -> Vec<f32> {
-            let dist = Normal::new(0.0, std).expect("a finite positive deviation");
-            (0..n).map(|_| dist.sample(rng) as f32).collect()
-        };
+        let n = var.elem_count();
+        // A linear layer's bias is declared uniform in `±1/√in` whatever its
+        // values; anything else whose values are all equal was declared
+        // constant.
         let sibling_in = name
             .strip_suffix(".bias")
             .and_then(|stem| tbl.get(&format!("{stem}.weight")))
             .and_then(|w| w.dims().get(1).copied());
-        let draw: Vec<f32> = if let Some(in_dim) = sibling_in {
+        if sibling_in.is_none() {
+            let values: Vec<f64> = var.flatten_all()?.to_dtype(DType::F64)?.to_vec1()?;
+            if values.windows(2).all(|w| w[0] == w[1]) {
+                continue;
+            }
+        }
+        let mut rng = StdRng::seed_from_u64(name_seed(seed, name));
+        let normal = |std: f64, rng: &mut StdRng| -> Vec<f64> {
+            let dist = Normal::new(0.0, std).expect("a finite positive deviation");
+            (0..n).map(|_| dist.sample(rng)).collect()
+        };
+        let draw: Vec<f64> = if let Some(in_dim) = sibling_in {
             let bound = 1.0 / (in_dim as f64).sqrt();
             (0..n)
-                .map(|_| ((rng.random::<f64>() * 2.0 - 1.0) * bound) as f32)
+                .map(|_| (rng.random::<f64>() * 2.0 - 1.0) * bound)
                 .collect()
-        } else if name.ends_with("modules.logits") {
+        } else if at_end(name, "modules.logits") {
             normal(
                 crate::candle::feature_embedding::INIT_LOGIT_JITTER,
                 &mut rng,
             )
-        } else if name.ends_with(crate::candle::lora::U_VAR_NAME) {
+        } else if at_end(name, crate::candle::lora::U_VAR_NAME) {
             normal((1.0 / *dims.last().unwrap_or(&1) as f64).sqrt(), &mut rng)
         } else {
             // candle's fan-in: the second dim times any receptive field.
@@ -94,7 +102,8 @@ pub fn seed_declared_vars(varmap: &VarMap, seed: u64, skip: impl Fn(&str) -> boo
             };
             normal(2f64.sqrt() / (fan_in as f64).sqrt(), &mut rng)
         };
-        var.set(&Tensor::from_vec(draw, dims.as_slice(), var.device())?)?;
+        let t = Tensor::from_vec(draw, dims.as_slice(), var.device())?.to_dtype(var.dtype())?;
+        var.set(&t)?;
     }
     Ok(())
 }

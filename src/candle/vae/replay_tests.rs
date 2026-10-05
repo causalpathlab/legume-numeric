@@ -177,3 +177,59 @@ fn the_redraw_keeps_each_declared_initialization() {
     let b: Vec<f32> = data["lin.bias"].to_vec1().unwrap();
     assert!(b.iter().all(|x| x.abs() <= 1.0 / 8.0));
 }
+
+/// A one-element bias is a linear layer's, declared uniform: it is redrawn
+/// from the seed, not kept as an unseeded draw.
+#[test]
+fn a_one_element_bias_is_redrawn_from_the_seed() {
+    let build = || {
+        let vm = VarMap::new();
+        let vb = VarBuilder::from_varmap(&vm, DType::F32, &Device::Cpu);
+        let _lin = candle_nn::linear(4, 1, vb.pp("out")).unwrap();
+        seed_declared_vars(&vm, 5, |_| false).unwrap();
+        bits(&vm)
+    };
+    assert_eq!(build(), build());
+}
+
+/// The seeded noise lives only while its guard does: the same seed replays,
+/// and once the guard is gone the draws are candle's again.
+#[test]
+fn the_noise_stream_ends_with_its_guard() {
+    use crate::candle::loss::{seed_noise, standard_normal_like};
+    let t = candle_core::Tensor::zeros(64, DType::F32, &Device::Cpu).unwrap();
+    let draw = || standard_normal_like(&t).unwrap().to_vec1::<f32>().unwrap();
+    let a = {
+        let _g = seed_noise(5);
+        draw()
+    };
+    let b = {
+        let _g = seed_noise(5);
+        draw()
+    };
+    assert_eq!(a, b);
+    assert_ne!(draw(), a, "after the guard, not the seeded stream");
+}
+
+/// Names match on path components: `gene_modules.logits` is a weight, drawn
+/// at its Kaiming scale, not the module logits' jitter; an f64 model is
+/// redrawn in its own dtype.
+#[test]
+fn the_redraw_reads_whole_names_and_any_dtype() {
+    let vm = VarMap::new();
+    let vb = VarBuilder::from_varmap(&vm, DType::F64, &Device::Cpu);
+    let _w = vb
+        .pp("gene_modules")
+        .get_with_hints((200, 64), "logits", candle_nn::init::DEFAULT_KAIMING_NORMAL)
+        .unwrap();
+    seed_declared_vars(&vm, 3, |_| false).unwrap();
+    let data = vm.data().lock().unwrap();
+    let w: Vec<f64> = data["gene_modules.logits"]
+        .flatten_all()
+        .unwrap()
+        .to_vec1()
+        .unwrap();
+    let sd = (w.iter().map(|x| x * x).sum::<f64>() / w.len() as f64).sqrt();
+    let want = (2.0f64 / 64.0).sqrt();
+    assert!((sd - want).abs() < 0.05 * want, "{sd} vs {want}");
+}

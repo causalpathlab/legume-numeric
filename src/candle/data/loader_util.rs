@@ -31,8 +31,9 @@ pub(crate) fn upload_columns_as_rows(
     )?)
 }
 
-/// Bootstrap-sample `ntot` indices from `[0, n)` with replacement, drawn
-/// from `seed` alone, so a run replays whatever the thread count. Shared by
+/// Bootstrap-sample `ntot` indices from `[0, n)` with replacement, in
+/// parallel, drawn from `seed` alone, so a run replays whatever the thread
+/// count. Shared by
 /// `Minibatches::shuffle_minibatch` (CPU path, `usize`) and the
 /// device-resident loaders (`u32`).
 pub(crate) fn bootstrap_indices<I>(n: usize, ntot: usize, seed: u64) -> Vec<I>
@@ -42,10 +43,18 @@ where
 {
     use rand::{rngs::StdRng, SeedableRng};
     use rand_distr::{Distribution, Uniform};
+    const CHUNK: usize = 1 << 16;
     let unif = Uniform::new(0usize, n).expect("unif [0 .. n)");
-    let mut rng = StdRng::seed_from_u64(seed);
-    (0..ntot)
-        .map(|_| I::try_from(unif.sample(&mut rng)).expect("index fits in target type"))
+    // One sub-stream per chunk, collected in order, so the draw is fixed
+    // whatever rayon's schedule.
+    (0..ntot.div_ceil(CHUNK))
+        .into_par_iter()
+        .flat_map_iter(|ci| {
+            let mut rng = StdRng::seed_from_u64(mix_seed(seed, ci as u64 + 1));
+            (ci * CHUNK..((ci + 1) * CHUNK).min(ntot)).map(move |_| {
+                I::try_from(unif.sample(&mut rng)).expect("index fits in target type")
+            })
+        })
         .collect()
 }
 
@@ -66,7 +75,7 @@ impl Minibatches {
     ///
     /// Not a partition: indices are drawn *with replacement* via
     /// `bootstrap_indices`, so one pass over `chunks` is a bootstrap
-    /// cover — some samples repeat, some are skipped. Every draw comes from
+    /// cover: some samples repeat, some are skipped. Every draw comes from
     /// `seed`, and the chunks keep their order, so a run replays.
     pub fn shuffle_minibatch(&mut self, batch_size: usize, seed: u64) {
         use rand::{rngs::StdRng, SeedableRng};

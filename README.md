@@ -10,7 +10,7 @@ Numeric and ML foundation for the [legume](https://github.com/causalpathlab/legu
 | `matrix` | `matrix` (default) | Matrix IO, KNN, layout, stats |
 | `param` | `param` (default) | Parametric / model helpers |
 | `candle` | `candle` | candle-core/nn training helpers |
-| `mcmc` | `mcmc` | MCMC diagnostics (effective sample size, split R̂); the samplers live in `sparse-bayes` |
+| `mcmc` | `mcmc` | MCMC engine: elliptical slice sampler, generic chain runner (`McmcModel`, `run_mcmc`) and diagnostics (effective sample size, split R̂) |
 
 ## Features
 

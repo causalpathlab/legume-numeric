@@ -76,6 +76,10 @@ jobs:
           echo "::group::--no-default-features --features matrix,param"
           cargo check --all-targets --no-default-features --features matrix,param
           echo "::endgroup::"
+          # The MCMC engine without candle: its `Tensor` impl is gated on `tensor`.
+          echo "::group::--no-default-features --features mcmc"
+          cargo check --all-targets --no-default-features --features mcmc
+          echo "::endgroup::"
 
   # `rust-version` is the highest `rust-version` among resolved dependencies.
   # That is the floor the dependency graph imposes; this job checks whether

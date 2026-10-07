@@ -5,7 +5,7 @@
 //! - [`matrix`] — matrix IO, KNN, layout, stats (ex `matrix-util`)
 //! - `param` — parametric helpers (ex `matrix-param`)
 //! - `candle` — candle training helpers (ex `candle-util`; feature `candle`)
-//! - `mcmc` — MCMC diagnostics: effective sample size, split R̂ (feature `mcmc`)
+//! - `mcmc` — MCMC engine: elliptical slice sampler, chain runner, diagnostics (feature `mcmc`)
 //!
 //! Features: `matrix` and `param` work on nalgebra `DMatrix` alone.
 //! `tensor` (default) adds candle `Tensor` support to the matrix code:

@@ -1,4 +1,4 @@
-//! Monte-Carlo accuracy diagnostics for a single chain.
+//! Monte-Carlo accuracy diagnostics.
 //!
 //! A posterior summary reported without one of these is a point estimate of unknown
 //! precision. The two that matter for a scalar summary of one chain:
@@ -10,6 +10,8 @@
 //! - [`mcse_proportion`] — the standard error of a **tail probability** estimated from
 //!   that chain (an `lfsr` is exactly such a probability). This is what says whether a
 //!   site sitting near a reporting threshold is genuinely near it, or just under-sampled.
+//!
+//! Convergence is [`split_rhat`] for one chain and [`split_rhat_chains`] across several.
 //!
 //! Note the name collision this crate lives with: throughout `engine::ess`, "ESS" means
 //! *elliptical slice sampling*. Here — and only here — it means *effective sample size*.
@@ -84,7 +86,8 @@ pub fn ess(x: &[f32]) -> f32 {
 ///
 /// What it CANNOT see, and this bound matters: a mode both halves are stuck in. Split-R̂
 /// certifies stationarity, not that the chain found the right place — for that there is
-/// no substitute for independent chains from dispersed starts.
+/// no substitute for independent chains from dispersed starts, checked with
+/// [`split_rhat_chains`].
 ///
 /// Returns `1.0` for a chain too short to split (nothing to compare), and `1.0` for a
 /// perfectly constant chain, since a zero within-segment variance means the segments
@@ -105,11 +108,48 @@ pub fn split_rhat(x: &[f32]) -> f32 {
     if n < 2 {
         return 1.0;
     }
+    let segments: Vec<&[f32]> = (0..m).map(|s| &x[s * n..(s + 1) * n]).collect();
+    gelman_rubin(&segments)
+}
+
+/// **Split-R̂ across chains**: cut each chain in half and compute Gelman–Rubin over all
+/// `2m` half-chains (Vehtari et al. 2021, without the rank normalization).
+///
+/// This is the check [`split_rhat`] cannot make. Whole chains that settled in different
+/// modes disagree with each other, which the between-half variance sees; a chain still
+/// drifting disagrees with itself, which the split sees even when every chain drifts the
+/// same way and whole-chain Gelman–Rubin would call them converged.
+///
+/// Chains are truncated to the shortest one, so every half has the same length. Returns
+/// `1.0` when there is nothing to compare: no chains, or a shortest chain under 4 draws
+/// (halves need 2 draws for a variance). Constant halves follow [`split_rhat`]: `1.0`
+/// when they all agree, [`f32::INFINITY`] when they disagree.
+#[must_use]
+pub fn split_rhat_chains(chains: &[&[f32]]) -> f32 {
+    let Some(t) = chains.iter().map(|c| c.len()).min() else {
+        return 1.0;
+    };
+    let n = t / 2;
+    if n < 2 {
+        return 1.0;
+    }
+    let segments: Vec<&[f32]> = chains
+        .iter()
+        .flat_map(|c| [&c[..n], &c[n..2 * n]])
+        .collect();
+    gelman_rubin(&segments)
+}
+
+/// Gelman–Rubin R̂ over `segments`, which must number at least 2 and all have the same
+/// length `n ≥ 2`.
+fn gelman_rubin(segments: &[&[f32]]) -> f32 {
+    let m = segments.len();
+    let n = segments[0].len();
+    debug_assert!(m >= 2 && n >= 2 && segments.iter().all(|s| s.len() == n));
 
     let mut means = Vec::with_capacity(m);
     let mut within = 0.0f64;
-    for s in 0..m {
-        let seg = &x[s * n..(s + 1) * n];
+    for seg in segments {
         let mean = seg.iter().map(|&v| f64::from(v)).sum::<f64>() / n as f64;
         let var = seg
             .iter()

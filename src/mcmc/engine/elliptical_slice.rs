@@ -4,6 +4,7 @@ use rayon::prelude::*;
 use std::f32::consts::PI;
 
 use super::chain::McmcChain;
+use super::runner::keep_flags;
 use super::traits::EssParam;
 
 /// Hard cap on bracket-shrinkage iterations inside [`elliptical_slice_step`].
@@ -69,9 +70,11 @@ pub fn elliptical_slice_step<P: EssParam>(
 }
 
 /// ESS chain runner configuration.
+#[derive(Clone, Debug)]
 pub struct EssSampler {
     pub n_samples: usize,
     pub warmup: usize,
+    /// Thinning interval; `0` is read as `1`.
     pub thin: usize,
     pub seed: u64,
 }
@@ -97,7 +100,6 @@ impl EssSampler {
         prior_draw: &impl Fn(&mut SmallRng) -> P,
         init: &P,
     ) -> McmcChain<P> {
-        let total = self.warmup + self.n_samples * self.thin;
         let mut rng = SmallRng::seed_from_u64(self.seed);
 
         let mut current = init.clone();
@@ -106,13 +108,13 @@ impl EssSampler {
         let mut samples = Vec::with_capacity(self.n_samples);
         let mut log_likelihoods = Vec::with_capacity(self.n_samples);
 
-        for i in 0..total {
+        for keep in keep_flags(self.warmup, self.n_samples, self.thin) {
             let nu = prior_draw(&mut rng);
             let (new, new_ll) = elliptical_slice_step(&current, &nu, lnpdf, cur_lnpdf, &mut rng);
             current = new;
             cur_lnpdf = new_ll;
 
-            if i >= self.warmup && (i - self.warmup).is_multiple_of(self.thin) {
+            if keep {
                 samples.push(current.clone());
                 log_likelihoods.push(cur_lnpdf);
             }
@@ -137,10 +139,8 @@ impl EssSampler {
             .into_par_iter()
             .map(|i| {
                 let sampler = EssSampler {
-                    n_samples: self.n_samples,
-                    warmup: self.warmup,
-                    thin: self.thin,
                     seed: self.seed.wrapping_add(i as u64),
+                    ..self.clone()
                 };
                 sampler.run(lnpdf, prior_draw, init)
             })

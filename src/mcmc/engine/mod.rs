@@ -5,7 +5,7 @@
 //! - [`elliptical_slice_step`]: Single ESS transition.
 //! - [`EssSampler`]: Legacy ESS-specific runner (prefer [`run_mcmc`] for new models).
 //! - [`McmcChain`]: Collected posterior samples with summary statistics.
-//! - [`ess`], [`split_rhat`], [`mcse_proportion`]: How much a chain's draws are actually worth.
+//! - [`ess`], [`split_rhat`], [`split_rhat_chains`], [`mcse_proportion`]: How much a chain's draws are actually worth.
 //!
 //! Note that "ESS" is two different things in the MCMC literature. Here, the *elliptical
 //! slice sampler* lives in `elliptical_slice` and [`ess`] means *effective sample size* —
@@ -20,7 +20,7 @@ mod runner;
 pub mod traits;
 
 pub use chain::McmcChain;
-pub use diagnostics::{ess, mcse_proportion, split_rhat};
+pub use diagnostics::{ess, mcse_proportion, split_rhat, split_rhat_chains};
 pub use elliptical_slice::{elliptical_slice_step, EssSampler};
 pub use elliptical_slice_batch::{elliptical_slice_batch, BatchStep};
 pub use model::McmcModel;

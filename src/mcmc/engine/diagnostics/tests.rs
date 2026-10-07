@@ -1,6 +1,7 @@
 use super::*;
+use crate::matrix::rand_util::collect_f32_seeded;
 
-/// Deterministic LCG — the diagnostics must be testable without pulling an RNG dep in.
+/// Deterministic LCG for the uniform-draw tests; normal draws come from `normal_chain`.
 struct Lcg(u64);
 impl Lcg {
     fn next_f32(&mut self) -> f32 {
@@ -87,16 +88,7 @@ fn mcse_is_nonzero_at_p_zero() {
 /// A stationary chain's segments are interchangeable, so R̂ sits at ~1.
 #[test]
 fn a_stationary_chain_has_rhat_near_one() {
-    use rand::rngs::SmallRng;
-    use rand::SeedableRng;
-    use rand_distr::{Distribution, StandardNormal};
-    let mut rng = SmallRng::seed_from_u64(11);
-    let x: Vec<f32> = (0..800)
-        .map(|_| {
-            let g: f64 = StandardNormal.sample(&mut rng);
-            g as f32
-        })
-        .collect();
+    let x = normal_chain(11, 800, 0.0, 1.0);
     let r = split_rhat(&x);
     assert!(
         (r - 1.0).abs() < 0.05,
@@ -146,4 +138,73 @@ fn constant_but_disagreeing_segments_are_not_converged() {
 fn a_chain_too_short_to_split_makes_no_claim() {
     assert_eq!(split_rhat(&[1.0, 2.0, 3.0]), 1.0);
     assert_eq!(split_rhat(&[]), 1.0);
+}
+
+/////////////////////////
+// split R̂ across chains //
+/////////////////////////
+
+fn normal_chain(seed: u64, n: usize, mean: f32, sd: f32) -> Vec<f32> {
+    collect_f32_seeded(n, rand_distr::Normal::new(mean, sd).unwrap(), seed)
+}
+
+/// Independent chains sampling the same distribution are interchangeable, half by half.
+#[test]
+fn chains_sampling_the_same_target_have_rhat_near_one() {
+    let chains: Vec<Vec<f32>> = (0..4)
+        .map(|s| normal_chain(100 + s, 500, 0.0, 1.0))
+        .collect();
+    let r = split_rhat_chains(&chains);
+    assert!(
+        (r - 1.0).abs() < 0.05,
+        "same target should give R̂ ≈ 1, got {r}"
+    );
+}
+
+/// THE case this exists for: each chain settled, but in a different mode. Each chain's own
+/// [`split_rhat`] is ≈ 1, since both halves agree; only comparing chains sees it.
+#[test]
+fn chains_stuck_in_different_modes_are_caught() {
+    let a = normal_chain(1, 400, 0.0, 0.07);
+    let b = normal_chain(2, 400, 2.0, 0.07);
+    assert!(split_rhat(&a) < 1.05 && split_rhat(&b) < 1.05);
+    let r = split_rhat_chains(&[&a, &b]);
+    assert!(r > 2.0, "chains at means 0 and 2 must not pass, got R̂ {r}");
+}
+
+/// Chains drifting the same way have equal whole-chain means, so whole-chain
+/// Gelman–Rubin calls them converged; the split sees each chain disagree with itself.
+#[test]
+fn chains_drifting_together_are_caught_by_the_split() {
+    let drift = |seed| {
+        let mut x = normal_chain(seed, 200, 0.0, 0.1);
+        x.extend(normal_chain(seed + 50, 200, 2.0, 0.1));
+        x
+    };
+    let (a, b) = (drift(3), drift(4));
+    let whole = gelman_rubin(&[&a, &b]);
+    assert!(whole < 1.01, "whole-chain R̂ misses the drift ({whole})");
+    let r = split_rhat_chains(&[&a, &b]);
+    assert!(r > 1.1, "the split must catch a shared drift, got R̂ {r}");
+}
+
+/// Chains of different lengths are compared over the shortest one's draws.
+#[test]
+fn chains_are_truncated_to_the_shortest() {
+    let a = normal_chain(5, 300, 0.0, 1.0);
+    let mut b = normal_chain(6, 300, 0.0, 1.0);
+    let truncated = split_rhat_chains(&[&a, &b]);
+    b.extend(vec![100.0f32; 500]); // past a's length: must be ignored
+    assert_eq!(split_rhat_chains(&[&a, &b]), truncated);
+}
+
+/// Constant halves follow `split_rhat`: agreeing ⇒ 1, disagreeing ⇒ ∞; too few draws ⇒ 1.
+#[test]
+fn degenerate_chains_follow_split_rhat() {
+    let (a, b) = (vec![0.5f32; 100], vec![0.5f32; 100]);
+    assert_eq!(split_rhat_chains(&[&a, &b]), 1.0);
+    let c = vec![1.5f32; 100];
+    assert_eq!(split_rhat_chains(&[&a, &c]), f32::INFINITY);
+    assert_eq!(split_rhat_chains::<&[f32]>(&[]), 1.0);
+    assert_eq!(split_rhat_chains(&[&[1.0, 2.0, 3.0][..], &a]), 1.0);
 }

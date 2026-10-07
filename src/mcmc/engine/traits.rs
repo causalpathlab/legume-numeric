@@ -57,6 +57,28 @@ impl EssParamSummary for DMatrix<f32> {
     }
 }
 
+////////////////
+// scalar f32 //
+////////////////
+
+/// A single scalar parameter, without the heap allocation per proposal that a
+/// 1-element `DVector` would cost in the sampler's inner loop.
+impl EssParam for f32 {
+    fn linear_combine(&self, a: f32, other: &Self, b: f32) -> Self {
+        a * self + b * other
+    }
+}
+
+impl EssParamSummary for f32 {
+    fn as_slice(&self) -> &[f32] {
+        std::slice::from_ref(self)
+    }
+
+    fn dim(&self) -> usize {
+        1
+    }
+}
+
 /////////////////////////////////////
 // Vec<P> for composite parameters //
 /////////////////////////////////////

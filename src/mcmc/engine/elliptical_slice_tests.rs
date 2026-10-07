@@ -435,3 +435,36 @@ fn test_composite_vec_params() {
         );
     }
 }
+
+/// A scalar `f32` parameter is the 1-element `DVector` without the allocation: same RNG
+/// draws, same arithmetic, so the chains match draw for draw.
+#[test]
+fn scalar_param_matches_one_element_vector() {
+    let y_obs = 3.0f32;
+    let sigma_sq = 2.0f32;
+    let normal = |rng: &mut SmallRng| -> f32 {
+        let v: f64 = StandardNormal.sample(rng);
+        v as f32
+    };
+
+    let sampler = EssSampler {
+        n_samples: 2_000,
+        warmup: 500,
+        thin: 2,
+        seed: 7,
+    };
+    let scalar = sampler.run(
+        &|f: &f32| -0.5 * (f - y_obs) * (f - y_obs) / sigma_sq,
+        &normal,
+        &0.0f32,
+    );
+    let vector = sampler.run(
+        &|f: &DVector<f32>| -0.5 * (f[0] - y_obs) * (f[0] - y_obs) / sigma_sq,
+        &|rng: &mut SmallRng| DVector::from_element(1, normal(rng)),
+        &DVector::from_element(1, 0.0f32),
+    );
+
+    let vector_draws: Vec<f32> = vector.samples.iter().map(|v| v[0]).collect();
+    assert_eq!(scalar.samples, vector_draws);
+    assert_eq!(scalar.posterior_mean(), vector.posterior_mean());
+}

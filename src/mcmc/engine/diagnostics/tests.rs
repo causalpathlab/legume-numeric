@@ -1,6 +1,7 @@
 use super::*;
+use crate::matrix::rand_util::collect_f32_seeded;
 
-/// Deterministic LCG — the diagnostics must be testable without pulling an RNG dep in.
+/// Deterministic LCG for the uniform-draw tests; normal draws come from `normal_chain`.
 struct Lcg(u64);
 impl Lcg {
     fn next_f32(&mut self) -> f32 {
@@ -87,16 +88,7 @@ fn mcse_is_nonzero_at_p_zero() {
 /// A stationary chain's segments are interchangeable, so R̂ sits at ~1.
 #[test]
 fn a_stationary_chain_has_rhat_near_one() {
-    use rand::rngs::SmallRng;
-    use rand::SeedableRng;
-    use rand_distr::{Distribution, StandardNormal};
-    let mut rng = SmallRng::seed_from_u64(11);
-    let x: Vec<f32> = (0..800)
-        .map(|_| {
-            let g: f64 = StandardNormal.sample(&mut rng);
-            g as f32
-        })
-        .collect();
+    let x = normal_chain(11, 800, 0.0, 1.0);
     let r = split_rhat(&x);
     assert!(
         (r - 1.0).abs() < 0.05,
@@ -153,16 +145,7 @@ fn a_chain_too_short_to_split_makes_no_claim() {
 /////////////////////////
 
 fn normal_chain(seed: u64, n: usize, mean: f32, sd: f32) -> Vec<f32> {
-    use rand::rngs::SmallRng;
-    use rand::SeedableRng;
-    use rand_distr::{Distribution, StandardNormal};
-    let mut rng = SmallRng::seed_from_u64(seed);
-    (0..n)
-        .map(|_| {
-            let g: f64 = StandardNormal.sample(&mut rng);
-            mean + sd * g as f32
-        })
-        .collect()
+    collect_f32_seeded(n, rand_distr::Normal::new(mean, sd).unwrap(), seed)
 }
 
 /// Independent chains sampling the same distribution are interchangeable, half by half.
@@ -171,8 +154,7 @@ fn chains_sampling_the_same_target_have_rhat_near_one() {
     let chains: Vec<Vec<f32>> = (0..4)
         .map(|s| normal_chain(100 + s, 500, 0.0, 1.0))
         .collect();
-    let refs: Vec<&[f32]> = chains.iter().map(Vec::as_slice).collect();
-    let r = split_rhat_chains(&refs);
+    let r = split_rhat_chains(&chains);
     assert!(
         (r - 1.0).abs() < 0.05,
         "same target should give R̂ ≈ 1, got {r}"
@@ -223,6 +205,6 @@ fn degenerate_chains_follow_split_rhat() {
     assert_eq!(split_rhat_chains(&[&a, &b]), 1.0);
     let c = vec![1.5f32; 100];
     assert_eq!(split_rhat_chains(&[&a, &c]), f32::INFINITY);
-    assert_eq!(split_rhat_chains(&[]), 1.0);
-    assert_eq!(split_rhat_chains(&[&[1.0, 2.0, 3.0], &a]), 1.0);
+    assert_eq!(split_rhat_chains::<&[f32]>(&[]), 1.0);
+    assert_eq!(split_rhat_chains(&[&[1.0, 2.0, 3.0][..], &a]), 1.0);
 }

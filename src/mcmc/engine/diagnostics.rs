@@ -124,9 +124,11 @@ pub fn split_rhat(x: &[f32]) -> f32 {
 /// `1.0` when there is nothing to compare: no chains, or a shortest chain under 4 draws
 /// (halves need 2 draws for a variance). Constant halves follow [`split_rhat`]: `1.0`
 /// when they all agree, [`f32::INFINITY`] when they disagree.
+///
+/// Takes chains as `&[Vec<f32>]` or `&[&[f32]]` alike.
 #[must_use]
-pub fn split_rhat_chains(chains: &[&[f32]]) -> f32 {
-    let Some(t) = chains.iter().map(|c| c.len()).min() else {
+pub fn split_rhat_chains<C: AsRef<[f32]>>(chains: &[C]) -> f32 {
+    let Some(t) = chains.iter().map(|c| c.as_ref().len()).min() else {
         return 1.0;
     };
     let n = t / 2;
@@ -135,6 +137,7 @@ pub fn split_rhat_chains(chains: &[&[f32]]) -> f32 {
     }
     let segments: Vec<&[f32]> = chains
         .iter()
+        .map(AsRef::as_ref)
         .flat_map(|c| [&c[..n], &c[n..2 * n]])
         .collect();
     gelman_rubin(&segments)

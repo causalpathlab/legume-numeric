@@ -11,7 +11,7 @@ use rayon::prelude::*;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
 #[cfg(test)]
@@ -628,66 +628,68 @@ pub fn recursive_copy(src_path: &str, dst_path: &str) -> anyhow::Result<()> {
 /// * Returns `extract_path`
 pub fn unzip_dir(zip_path: &str, extract_path: Option<&str>) -> anyhow::Result<Box<str>> {
     let extract_path = match extract_path {
-        Some(path) => std::path::PathBuf::from(path),
+        Some(path) => PathBuf::from(path),
         None => std::env::current_dir()?,
     };
-    unzip_entries(zip_path, Path::new(""), &extract_path)?;
+    unzip_entries(zip_path, "", &extract_path)?;
     Ok(extract_path.into_boxed_str())
 }
 
 /// Like [`unzip_dir`], but only the entries under `root` (the directory
 /// [`zip_dir_as`] puts its entries under), with `root` stripped.
 pub fn unzip_subdir(zip_path: &str, root: &str, extract_path: &str) -> anyhow::Result<()> {
-    unzip_entries(zip_path, Path::new(root), Path::new(extract_path))
+    unzip_entries(zip_path, root, Path::new(extract_path))
 }
 
 /// Unzip the entries of `zip_path` under `root` into `dest`, `root` stripped
 /// (an empty `root` keeps every entry).
 ///
-/// Every entry is checked before anything is written: its name must stay
-/// inside `dest` (no `..` climbing out, no NUL, no drive; an absolute name
-/// loses its root), and it must not be encrypted. Files are created under the
-/// process umask, whatever modes the archive records, and a symlink entry is
-/// written as a plain file, so an archive cannot plant a link for a later
-/// entry to pass through.
-fn unzip_entries(zip_path: &str, root: &Path, dest: &Path) -> anyhow::Result<()> {
+/// Every entry is checked before anything is written: its name must have a
+/// safe path ([`safe_rel_path`]) and it must not be encrypted. Files are
+/// created under the process umask, whatever modes the archive records, and
+/// a symlink entry is written as a plain file, so an archive cannot plant a
+/// link for a later entry to pass through.
+fn unzip_entries(zip_path: &str, root: &str, dest: &Path) -> anyhow::Result<()> {
     use anyhow::Context;
-    use std::path::Component;
-    let plain = |c: Component| matches!(c, Component::Normal(_));
-    let root: std::path::PathBuf = root.components().filter(|&c| plain(c)).collect();
+    let no_safe_path = |name: &str| {
+        anyhow::anyhow!(
+            "{zip_path}: {name:?} has no safe path under {}",
+            dest.display()
+        )
+    };
+    let root = safe_rel_path(root).ok_or_else(|| no_safe_path(root))?;
+    let rel_of = |entry: &zip::read::ZipFileEntry<'_>| -> anyhow::Result<Option<PathBuf>> {
+        let name = entry.name().ok().and_then(|name| safe_rel_path(&name));
+        let name = name.ok_or_else(|| no_safe_path(&String::from_utf8_lossy(entry.name_raw())))?;
+        Ok(name
+            .strip_prefix(&root)
+            .ok()
+            .filter(|rel| !rel.as_os_str().is_empty())
+            .map(Path::to_path_buf))
+    };
 
     let mut archive = zip::ZipArchive::new(BufReader::new(File::open(zip_path)?))?;
     let mut planned = Vec::with_capacity(archive.len());
     for i in 0..archive.len() {
         let entry = archive.by_index_data(i)?;
-        let raw = || String::from_utf8_lossy(entry.name_raw());
-        let name = entry
-            .enclosed_name()
-            .filter(|name| name.components().all(plain))
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "{zip_path}: entry {:?} has no safe path under {}",
-                    raw(),
-                    dest.display()
-                )
-            })?;
-        let Ok(rel) = name.strip_prefix(&root) else {
-            continue;
-        };
-        if rel.as_os_str().is_empty() {
+        if rel_of(&entry)?.is_none() {
             continue;
         }
         if entry.encrypted() {
-            anyhow::bail!("{zip_path}: entry {:?} is encrypted", raw());
+            anyhow::bail!(
+                "{zip_path}: entry {:?} is encrypted",
+                String::from_utf8_lossy(entry.name_raw())
+            );
         }
-        planned.push((i, dest.join(rel)));
+        planned.push(i);
     }
     if planned.is_empty() && !root.as_os_str().is_empty() {
         anyhow::bail!("{zip_path}: no entries under {}", root.display());
     }
 
     std::fs::create_dir_all(dest).with_context(|| format!("creating {}", dest.display()))?;
-    for (i, out_path) in planned {
+    for i in planned {
+        let out_path = dest.join(rel_of(&archive.by_index_data(i)?)?.unwrap_or_default());
         let mut write = || -> anyhow::Result<()> {
             let mut file = archive.by_index(i)?;
             if file.is_dir() {
@@ -703,6 +705,23 @@ fn unzip_entries(zip_path: &str, root: &Path, dest: &Path) -> anyhow::Result<()>
         write().with_context(|| format!("{zip_path}: extracting {}", out_path.display()))?;
     }
     Ok(())
+}
+
+/// An archive name as a path relative to the extraction directory, or `None`
+/// when it has none that is safe. `/` and `\` both separate components;
+/// empty and `.` components are dropped, so an absolute name loses its root;
+/// a `..`, a `:` (a drive or a stream) or a NUL refuses the name.
+fn safe_rel_path(name: &str) -> Option<PathBuf> {
+    let mut rel = PathBuf::new();
+    for part in name.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => return None,
+            _ if part.contains([':', '\0']) => return None,
+            _ => rel.push(part),
+        }
+    }
+    Some(rel)
 }
 
 /// Zip a directory into a zip archive using `Stored` compression

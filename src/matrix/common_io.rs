@@ -627,29 +627,76 @@ pub fn recursive_copy(src_path: &str, dst_path: &str) -> anyhow::Result<()> {
 /// `None`, just use a current directory.
 /// * Returns `extract_path`
 pub fn unzip_dir(zip_path: &str, extract_path: Option<&str>) -> anyhow::Result<Box<str>> {
-    let zip_file = std::fs::File::open(zip_path)?;
-    let mut archive = zip::ZipArchive::new(zip_file)?;
+    let extract_path = match extract_path {
+        Some(path) => std::path::PathBuf::from(path),
+        None => std::env::current_dir()?,
+    };
+    unzip_entries(zip_path, Path::new(""), &extract_path)?;
+    Ok(extract_path.into_boxed_str())
+}
 
-    let extract_path = extract_path
-        .map(std::path::PathBuf::from)
-        .unwrap_or(std::env::current_dir()?);
+/// Unzip the entries of `zip_path` under `root` into `dest`, `root` stripped
+/// (an empty `root` keeps every entry).
+///
+/// Every entry is checked before anything is written: its name must stay
+/// inside `dest` (no `..` climbing out, no NUL, no drive; an absolute name
+/// loses its root), and it must not be encrypted. Files are created under the
+/// process umask, whatever modes the archive records, and a symlink entry is
+/// written as a plain file, so an archive cannot plant a link for a later
+/// entry to pass through.
+fn unzip_entries(zip_path: &str, root: &Path, dest: &Path) -> anyhow::Result<()> {
+    use anyhow::Context;
+    use std::path::Component;
+    let plain = |c: Component| matches!(c, Component::Normal(_));
+    let root: std::path::PathBuf = root.components().filter(|&c| plain(c)).collect();
 
+    let mut archive = zip::ZipArchive::new(BufReader::new(File::open(zip_path)?))?;
+    let mut planned = Vec::with_capacity(archive.len());
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i)?;
-        let out_path = extract_path.join(file.name()?.as_ref());
-        // println!("{}", out_path.to_str().unwrap());
-        if file.is_dir() {
-            std::fs::create_dir_all(&out_path)?;
-        } else {
-            if let Some(parent) = out_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let mut outfile = std::fs::File::create(&out_path)?;
-            std::io::copy(&mut file, &mut outfile)?;
+        let entry = archive.by_index_data(i)?;
+        let raw = || String::from_utf8_lossy(entry.name_raw());
+        let name = entry
+            .enclosed_name()
+            .filter(|name| name.components().all(plain))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{zip_path}: entry {:?} has no safe path under {}",
+                    raw(),
+                    dest.display()
+                )
+            })?;
+        let Ok(rel) = name.strip_prefix(&root) else {
+            continue;
+        };
+        if rel.as_os_str().is_empty() {
+            continue;
         }
+        if entry.encrypted() {
+            anyhow::bail!("{zip_path}: entry {:?} is encrypted", raw());
+        }
+        planned.push((i, dest.join(rel)));
+    }
+    if planned.is_empty() && !root.as_os_str().is_empty() {
+        anyhow::bail!("{zip_path}: no entries under {}", root.display());
     }
 
-    Ok(extract_path.into_boxed_str())
+    std::fs::create_dir_all(dest).with_context(|| format!("creating {}", dest.display()))?;
+    for (i, out_path) in planned {
+        let mut write = || -> anyhow::Result<()> {
+            let mut file = archive.by_index(i)?;
+            if file.is_dir() {
+                std::fs::create_dir_all(&out_path)?;
+            } else {
+                if let Some(parent) = out_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::io::copy(&mut file, &mut File::create(&out_path)?)?;
+            }
+            Ok(())
+        };
+        write().with_context(|| format!("{zip_path}: extracting {}", out_path.display()))?;
+    }
+    Ok(())
 }
 
 /// Zip a directory into a zip archive using `Stored` compression

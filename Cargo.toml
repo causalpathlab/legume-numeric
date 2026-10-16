@@ -63,7 +63,7 @@ indicatif = { version = "^0.18", features = ["rayon"] }
 parquet = "59"
 rustc-hash = "2.1"
 log = "0.4"
-zip = "8"
+zip = "9.0.4"
 clustering = { version = "0.2", features = ["parallel"] }
 petgraph = "0.8"
 special = "0.13"

@@ -636,7 +636,7 @@ pub fn unzip_dir(zip_path: &str, extract_path: Option<&str>) -> anyhow::Result<B
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
-        let out_path = extract_path.join(file.name());
+        let out_path = extract_path.join(file.name()?.as_ref());
         // println!("{}", out_path.to_str().unwrap());
         if file.is_dir() {
             std::fs::create_dir_all(&out_path)?;

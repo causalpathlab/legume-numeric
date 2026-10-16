@@ -363,3 +363,81 @@ fn unzip_errors_name_the_path() {
         "{err}"
     );
 }
+
+/// `unzip_subdir` brings back what `zip_dir_as` zipped, behind a named root
+/// or the source's basename, flat; entries outside the root (an OS's
+/// metadata, a README) are left out.
+#[test]
+fn unzip_subdir_unzips_a_zipped_dir_back_flat() {
+    for (root, given) in [
+        (Some("run"), "run"),
+        (Some("run"), "./run"),
+        (None, "run.zarr"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("run.zarr");
+        std::fs::create_dir_all(src.join("X/c/0")).unwrap();
+        std::fs::write(src.join("zarr.json"), b"{}").unwrap();
+        std::fs::write(src.join("X/c/0/1"), b"chunk").unwrap();
+        let zip_path = dir.path().join("renamed.zip");
+        let zip = zip_path.to_str().unwrap();
+        zip_dir_as(src.to_str().unwrap(), zip, root).unwrap();
+        let mut w = zip::ZipWriter::new_append(
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(zip)
+                .unwrap(),
+        )
+        .unwrap();
+        let opts = zip::write::SimpleFileOptions::default();
+        w.start_file("README.txt", opts).unwrap();
+        w.start_file("__MACOSX/run/._zarr.json", opts).unwrap();
+        w.finish().unwrap();
+        let out = dir.path().join("back");
+        unzip_subdir(zip, given, out.to_str().unwrap()).unwrap();
+        assert_eq!(
+            std::fs::read(out.join("zarr.json")).unwrap(),
+            b"{}",
+            "{given}"
+        );
+        assert_eq!(
+            std::fs::read(out.join("X/c/0/1")).unwrap(),
+            b"chunk",
+            "{given}"
+        );
+        assert!(!out.join("README.txt").exists() && !out.join("__MACOSX").exists());
+    }
+}
+
+/// An escape is refused even when it hides behind the root being stripped.
+#[test]
+fn unzip_subdir_refuses_an_escape_behind_the_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = archive_of(
+        &dir,
+        &[("run/a.txt", b"ok"), ("run/../../escape.txt", b"x")],
+    );
+    let target = dir.path().join("out");
+    let err = unzip_subdir(zip_path.to_str().unwrap(), "run", target.to_str().unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no safe path"), "{err}");
+    assert!(!dir.path().join("escape.txt").exists());
+    assert!(
+        !target.join("a.txt").exists(),
+        "a refused archive left files behind"
+    );
+}
+
+/// A root that holds no entry is an error, not an empty success.
+#[test]
+fn unzip_subdir_refuses_a_root_with_no_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = archive_of(&dir, &[("run/a.txt", b"ok")]);
+    let target = dir.path().join("out");
+    let err = unzip_subdir(zip_path.to_str().unwrap(), "rnu", target.to_str().unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no entries under rnu"), "{err}");
+}

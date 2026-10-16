@@ -635,6 +635,12 @@ pub fn unzip_dir(zip_path: &str, extract_path: Option<&str>) -> anyhow::Result<B
     Ok(extract_path.into_boxed_str())
 }
 
+/// Like [`unzip_dir`], but only the entries under `root` (the directory
+/// [`zip_dir_as`] puts its entries under), with `root` stripped.
+pub fn unzip_subdir(zip_path: &str, root: &str, extract_path: &str) -> anyhow::Result<()> {
+    unzip_entries(zip_path, Path::new(root), Path::new(extract_path))
+}
+
 /// Unzip the entries of `zip_path` under `root` into `dest`, `root` stripped
 /// (an empty `root` keeps every entry).
 ///

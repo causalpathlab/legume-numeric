@@ -441,3 +441,35 @@ fn unzip_subdir_refuses_a_root_with_no_entries() {
         .to_string();
     assert!(err.contains("no entries under rnu"), "{err}");
 }
+
+/// A drive or stream colon refuses the name rather than being stripped, so
+/// two entries cannot silently land on the same file.
+#[test]
+fn unzip_refuses_a_name_with_a_drive() {
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = archive_of(&dir, &[("data.txt", b"b"), ("c:data.txt", b"a")]);
+    let target = dir.path().join("out");
+    let err = unzip_into(&zip_path, &target).unwrap_err().to_string();
+    assert!(err.contains("no safe path"), "{err}");
+    assert!(
+        !target.join("data.txt").exists(),
+        "a refused archive left files behind"
+    );
+}
+
+/// The root given to `unzip_subdir` is checked like an entry's name: `..`
+/// is refused, not dropped.
+#[test]
+fn unzip_subdir_refuses_a_root_that_climbs() {
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = archive_of(&dir, &[("run/a.txt", b"ok")]);
+    let target = dir.path().join("out");
+    let err = unzip_subdir(
+        zip_path.to_str().unwrap(),
+        "../run",
+        target.to_str().unwrap(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("no safe path"), "{err}");
+}

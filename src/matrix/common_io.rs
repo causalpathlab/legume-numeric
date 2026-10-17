@@ -17,6 +17,9 @@ use tempfile::tempdir;
 #[cfg(test)]
 mod tests;
 
+mod two_field;
+pub use two_field::{read_two_field_rows, TwoFieldRows};
+
 /// Define a Delimiter enum to handle both &str and `Vec<char>`
 pub enum Delimiter {
     Str(String),

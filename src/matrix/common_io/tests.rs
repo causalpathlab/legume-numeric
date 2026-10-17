@@ -199,3 +199,277 @@ fn file_stem_drops_parquet_and_vcf_extensions_too() {
     assert_eq!(file_stem("ieu-a-2.vcf.gz"), "ieu-a-2");
     assert_eq!(file_stem("x/goa_human.gaf.gz"), "goa_human");
 }
+
+/// A zip in `dir` written by `build`, entry names as given.
+fn write_zip(
+    dir: &tempfile::TempDir,
+    build: impl FnOnce(&mut zip::ZipWriter<File>, zip::write::SimpleFileOptions),
+) -> std::path::PathBuf {
+    let zip_path = dir.path().join("archive.zip");
+    let mut w = zip::ZipWriter::new(File::create(&zip_path).unwrap());
+    build(&mut w, zip::write::SimpleFileOptions::default());
+    w.finish().unwrap();
+    zip_path
+}
+
+/// A zip of the given (name, contents) entries.
+fn archive_of(dir: &tempfile::TempDir, entries: &[(&str, &[u8])]) -> std::path::PathBuf {
+    write_zip(dir, |w, opts| {
+        for (name, bytes) in entries {
+            w.start_file(*name, opts).unwrap();
+            w.write_all(bytes).unwrap();
+        }
+    })
+}
+
+fn unzip_into(zip_path: &Path, target: &Path) -> anyhow::Result<Box<str>> {
+    unzip_dir(zip_path.to_str().unwrap(), Some(target.to_str().unwrap()))
+}
+
+/// An entry that climbs out of the extraction directory (`../x`, "zip slip")
+/// refuses the whole archive, before anything is written.
+#[test]
+fn unzip_refuses_an_entry_that_leaves_the_extraction_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = archive_of(
+        &dir,
+        &[("inside.txt", b"ok"), ("../escape.txt", b"escaped")],
+    );
+    let target = dir.path().join("out");
+    let err = unzip_into(&zip_path, &target).unwrap_err().to_string();
+    assert!(err.contains("no safe path"), "{err}");
+    assert!(
+        !dir.path().join("escape.txt").exists(),
+        "written outside the target"
+    );
+    assert!(
+        !target.join("inside.txt").exists(),
+        "a refused archive left files behind"
+    );
+}
+
+/// zip 9.0.3's sanitiser let a verbatim Windows prefix hide `..` from it.
+#[test]
+fn unzip_refuses_a_verbatim_prefixed_escape() {
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = archive_of(
+        &dir,
+        &[("inside.txt", b"ok"), ("\\\\?\\C:\\../escape.txt", b"x")],
+    );
+    let target = dir.path().join("out");
+    let err = unzip_into(&zip_path, &target).unwrap_err().to_string();
+    assert!(err.contains("no safe path"), "{err}");
+    assert!(!dir.path().join("escape.txt").exists());
+    assert!(
+        !target.join("inside.txt").exists(),
+        "a refused archive left files behind"
+    );
+}
+
+/// An absolute name is kept inside the target: its root is dropped.
+#[test]
+fn unzip_keeps_an_absolute_name_inside_the_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = archive_of(&dir, &[("/abs_probe.txt", b"inside")]);
+    let target = dir.path().join("out");
+    unzip_into(&zip_path, &target).unwrap();
+    assert_eq!(
+        std::fs::read(target.join("abs_probe.txt")).unwrap(),
+        b"inside"
+    );
+}
+
+/// A symlink entry is written as a plain file, so an archive can never plant
+/// a link for a later entry to pass through.
+#[cfg(unix)]
+#[test]
+fn unzip_writes_a_symlink_entry_as_a_plain_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = write_zip(&dir, |w, opts| {
+        w.add_symlink("link", "../../etc", opts).unwrap()
+    });
+    let target = dir.path().join("out");
+    unzip_into(&zip_path, &target).unwrap();
+    assert!(!target.join("link").symlink_metadata().unwrap().is_symlink());
+}
+
+/// The modes an archive records are not applied, neither to what is
+/// extracted nor to the target directory itself.
+#[cfg(unix)]
+#[test]
+fn unzip_ignores_the_archive_modes() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = write_zip(&dir, |w, opts| {
+        w.add_directory("./", opts.unix_permissions(0o500)).unwrap();
+        w.add_directory("d/", opts.unix_permissions(0o555)).unwrap();
+        w.start_file("d/f.txt", opts.unix_permissions(0o444))
+            .unwrap();
+        w.write_all(b"x").unwrap();
+    });
+    let target = dir.path().join("out");
+    std::fs::create_dir_all(&target).unwrap();
+    let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    let before = mode(&target);
+    unzip_into(&zip_path, &target).unwrap();
+    assert_eq!(mode(&target), before, "the target's mode changed");
+    assert_ne!(
+        mode(&target.join("d")) & 0o200,
+        0,
+        "the directory is read-only"
+    );
+    assert_ne!(
+        mode(&target.join("d/f.txt")) & 0o200,
+        0,
+        "the file is read-only"
+    );
+}
+
+/// An encrypted entry cannot be read, so the archive is refused up front
+/// rather than halfway through.
+#[test]
+fn unzip_refuses_an_encrypted_entry_before_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = write_zip(&dir, |w, opts| {
+        w.start_file("first.txt", opts).unwrap();
+        w.write_all(b"ok").unwrap();
+        w.start_file(
+            "secret.txt",
+            opts.with_aes_encryption(zip::AesMode::Aes256, "pw"),
+        )
+        .unwrap();
+        w.write_all(b"x").unwrap();
+    });
+    let target = dir.path().join("out");
+    let err = unzip_into(&zip_path, &target).unwrap_err().to_string();
+    assert!(err.contains("encrypted"), "{err}");
+    assert!(
+        !target.join("first.txt").exists(),
+        "a refused archive left files behind"
+    );
+}
+
+/// A write that fails names the archive and the path it was writing.
+#[test]
+fn unzip_errors_name_the_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = archive_of(&dir, &[("d/x.txt", b"x")]);
+    let target = dir.path().join("out");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("d"), b"a file where a directory goes").unwrap();
+    let err = format!("{:#}", unzip_into(&zip_path, &target).unwrap_err());
+    assert!(
+        err.contains("archive.zip") && err.contains("d/x.txt"),
+        "{err}"
+    );
+}
+
+/// `unzip_subdir` brings back what `zip_dir_as` zipped, behind a named root
+/// or the source's basename, flat; entries outside the root (an OS's
+/// metadata, a README) are left out.
+#[test]
+fn unzip_subdir_unzips_a_zipped_dir_back_flat() {
+    for (root, given) in [
+        (Some("run"), "run"),
+        (Some("run"), "./run"),
+        (None, "run.zarr"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("run.zarr");
+        std::fs::create_dir_all(src.join("X/c/0")).unwrap();
+        std::fs::write(src.join("zarr.json"), b"{}").unwrap();
+        std::fs::write(src.join("X/c/0/1"), b"chunk").unwrap();
+        let zip_path = dir.path().join("renamed.zip");
+        let zip = zip_path.to_str().unwrap();
+        zip_dir_as(src.to_str().unwrap(), zip, root).unwrap();
+        let mut w = zip::ZipWriter::new_append(
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(zip)
+                .unwrap(),
+        )
+        .unwrap();
+        let opts = zip::write::SimpleFileOptions::default();
+        w.start_file("README.txt", opts).unwrap();
+        w.start_file("__MACOSX/run/._zarr.json", opts).unwrap();
+        w.finish().unwrap();
+        let out = dir.path().join("back");
+        unzip_subdir(zip, given, out.to_str().unwrap()).unwrap();
+        assert_eq!(
+            std::fs::read(out.join("zarr.json")).unwrap(),
+            b"{}",
+            "{given}"
+        );
+        assert_eq!(
+            std::fs::read(out.join("X/c/0/1")).unwrap(),
+            b"chunk",
+            "{given}"
+        );
+        assert!(!out.join("README.txt").exists() && !out.join("__MACOSX").exists());
+    }
+}
+
+/// An escape is refused even when it hides behind the root being stripped.
+#[test]
+fn unzip_subdir_refuses_an_escape_behind_the_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = archive_of(
+        &dir,
+        &[("run/a.txt", b"ok"), ("run/../../escape.txt", b"x")],
+    );
+    let target = dir.path().join("out");
+    let err = unzip_subdir(zip_path.to_str().unwrap(), "run", target.to_str().unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no safe path"), "{err}");
+    assert!(!dir.path().join("escape.txt").exists());
+    assert!(
+        !target.join("a.txt").exists(),
+        "a refused archive left files behind"
+    );
+}
+
+/// A root that holds no entry is an error, not an empty success.
+#[test]
+fn unzip_subdir_refuses_a_root_with_no_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = archive_of(&dir, &[("run/a.txt", b"ok")]);
+    let target = dir.path().join("out");
+    let err = unzip_subdir(zip_path.to_str().unwrap(), "rnu", target.to_str().unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no entries under rnu"), "{err}");
+}
+
+/// A drive or stream colon refuses the name rather than being stripped, so
+/// two entries cannot silently land on the same file.
+#[test]
+fn unzip_refuses_a_name_with_a_drive() {
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = archive_of(&dir, &[("data.txt", b"b"), ("c:data.txt", b"a")]);
+    let target = dir.path().join("out");
+    let err = unzip_into(&zip_path, &target).unwrap_err().to_string();
+    assert!(err.contains("no safe path"), "{err}");
+    assert!(
+        !target.join("data.txt").exists(),
+        "a refused archive left files behind"
+    );
+}
+
+/// The root given to `unzip_subdir` is checked like an entry's name: `..`
+/// is refused, not dropped.
+#[test]
+fn unzip_subdir_refuses_a_root_that_climbs() {
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = archive_of(&dir, &[("run/a.txt", b"ok")]);
+    let target = dir.path().join("out");
+    let err = unzip_subdir(
+        zip_path.to_str().unwrap(),
+        "../run",
+        target.to_str().unwrap(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("no safe path"), "{err}");
+}

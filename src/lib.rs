@@ -1,6 +1,7 @@
 //! Numeric / ML foundation for the legume ecosystem.
 //!
 //! Modules:
+//! - [`fast_math`]: fast, approximate `f32` `ln` and `ln Γ`, and `ln Γ` increments
 //! - [`leiden`] — vendored CWTS/10x Leiden port (see `NOTICE`)
 //! - [`matrix`] — matrix IO, KNN, layout, stats (ex `matrix-util`)
 //! - `param` — parametric helpers (ex `matrix-param`)
@@ -15,6 +16,7 @@
 //! that only needs `DMatrix` sets `default-features = false` and links
 //! neither candle nor ndarray.
 
+pub mod fast_math;
 pub mod leiden;
 
 /// candle-core, for crates that use `Tensor` through the `tensor` feature

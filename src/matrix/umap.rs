@@ -16,6 +16,9 @@
 //! each end in turn pulls the pair together and is pushed away from
 //! `negative_sample_rate` random points. The result is centred.
 //!
+//! [`Umap::fit_on`] runs the same SGD on a candle device (Metal, CUDA or
+//! CPU) with synchronous epochs; start it from PCA.
+//!
 //! References:
 //! - McInnes, Healy & Melville, *arXiv* 1802.03426 — UMAP.
 //! - Recht et al., *NeurIPS* 2011 — HOGWILD! lock-free SGD.
@@ -23,6 +26,9 @@
 use nalgebra::Vector2;
 use rand::{rngs::SmallRng, RngExt, SeedableRng};
 use rayon::prelude::*;
+
+#[cfg(feature = "tensor")]
+mod device;
 
 const A: f32 = 1.929;
 const B: f32 = 0.7915;
@@ -179,9 +185,7 @@ fn apply_attraction(y: &HogwildCoords, i: usize, j: usize, alpha: f32, a: f32, b
     if d2 <= 0.0 {
         return;
     }
-    let d2b = d2.powf(b);
-    let coeff = -2.0 * a * b * (d2b / d2) / (a * d2b + 1.0);
-    let grad = (diff * coeff).map(clamp4) * alpha;
+    let grad = (diff * attraction_coeff(d2, a, b)).map(clamp4) * alpha;
     y.add(i, grad);
     y.add(j, -grad);
 }
@@ -191,12 +195,35 @@ fn apply_repulsion(y: &HogwildCoords, i: usize, k: usize, alpha: f32, a: f32, b:
     let diff = y.get(i) - y.get(k);
     let d2 = diff.norm_squared();
     let coeff = if d2 > 0.0 {
-        2.0 * b / ((0.001 + d2) * (a * d2.powf(b) + 1.0))
+        repulsion_coeff(d2, a, b)
     } else {
         4.0
     };
     let grad = (diff * coeff).map(clamp4) * alpha;
     y.add(i, grad);
+}
+
+/// `x^b`, sparing the `powf` for t-UMAP's `b = 1`.
+#[inline]
+fn pow_b(x: f32, b: f32) -> f32 {
+    if b == 1.0 {
+        x
+    } else {
+        x.powf(b)
+    }
+}
+
+/// The attraction gradient's coefficient at squared distance `d2 > 0`.
+#[inline]
+fn attraction_coeff(d2: f32, a: f32, b: f32) -> f32 {
+    let d2b = pow_b(d2, b);
+    -2.0 * a * b * (d2b / d2) / (a * d2b + 1.0)
+}
+
+/// The repulsion gradient's coefficient at squared distance `d2 > 0`.
+#[inline]
+fn repulsion_coeff(d2: f32, a: f32, b: f32) -> f32 {
+    2.0 * b / ((0.001 + d2) * (a * pow_b(d2, b) + 1.0))
 }
 
 #[inline]
@@ -210,26 +237,38 @@ mod tests {
     use crate::matrix::knn_graph::{KnnGraph, KnnGraphArgs};
     use nalgebra::DMatrix;
 
-    /// Uniform points in a square, laid out by t-UMAP on their kNN graph.
-    fn layout(n: usize) -> Vec<f32> {
-        let mut rng = SmallRng::seed_from_u64(3);
-        let data = DMatrix::from_fn(n, 2, |_, _| rng.random_range(0.0_f32..1.0));
+    /// `(i, j, w)` from the fuzzy kNN graph of the rows of `data`.
+    pub(super) fn fuzzy_edges(data: &DMatrix<f32>, knn: usize) -> Vec<(usize, usize, f32)> {
         let (graph, w) = KnnGraph::from_rows_fuzzy(
-            &data,
+            data,
             KnnGraphArgs {
-                knn: 14,
+                knn,
                 block_size: 256,
                 reciprocal: false,
             },
         )
         .unwrap();
-        let edges: Vec<_> = graph
+        graph
             .edges
             .iter()
             .zip(&w)
             .map(|(&(i, j), &w)| (i, j, w))
-            .collect();
+            .collect()
+    }
+
+    /// The fuzzy kNN graph of uniform points in a square, and a random
+    /// start for its layout.
+    pub(super) fn square_graph(n: usize) -> (Vec<(usize, usize, f32)>, Vec<f32>) {
+        let mut rng = SmallRng::seed_from_u64(3);
+        let data = DMatrix::from_fn(n, 2, |_, _| rng.random_range(0.0_f32..1.0));
+        let edges = fuzzy_edges(&data, 14);
         let init: Vec<f32> = (0..n * 2).map(|_| rng.random_range(-10.0..10.0)).collect();
+        (edges, init)
+    }
+
+    /// Uniform points in a square, laid out by t-UMAP on their kNN graph.
+    fn layout(n: usize) -> Vec<f32> {
+        let (edges, init) = square_graph(n);
         Umap {
             n_epochs: 200,
             ..Umap::tumap()
@@ -238,7 +277,7 @@ mod tests {
     }
 
     /// Mean distance to the nearest other point, for the points `of`.
-    fn spacing(y: &[f32], n: usize, of: std::ops::Range<usize>) -> f32 {
+    pub(super) fn spacing(y: &[f32], n: usize, of: std::ops::Range<usize>) -> f32 {
         let at = |i: usize| Vector2::new(y[i * 2], y[i * 2 + 1]);
         let m = of.len() as f32;
         of.map(|i| {

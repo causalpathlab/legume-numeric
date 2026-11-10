@@ -12,7 +12,8 @@
 //! `tensor` (default) adds candle `Tensor` support to the matrix code:
 //! conversions, tensor IO, sampling and fused ops. `ndarray` (default) adds
 //! ndarray `Array2` support: IO, sampling, `ndarray_stat`, `ndarray_gamma`
-//! and kNN from ndarray views. `candle` builds on `tensor`. A crate
+//! and kNN from ndarray views. `candle` builds on `tensor`. `metal` and
+//! `cuda` also run matrix code on the GPU (`Umap::fit_on`). A crate
 //! that only needs `DMatrix` sets `default-features = false` and links
 //! neither candle nor ndarray.
 

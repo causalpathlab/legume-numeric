@@ -19,6 +19,11 @@
 //! [`Umap::fit_on`] runs the same SGD on a candle device (Metal, CUDA or
 //! CPU) with synchronous epochs; start it from PCA.
 //!
+//! The start sets the global shape the SGD keeps. On a curved manifold
+//! the PCA start folds it, and
+//! [`crate::matrix::landmark_init::landmark_init_2d`] lays it out along the
+//! graph instead.
+//!
 //! References:
 //! - McInnes, Healy & Melville, *arXiv* 1802.03426 — UMAP.
 //! - Recht et al., *NeurIPS* 2011 — HOGWILD! lock-free SGD.
@@ -234,27 +239,8 @@ fn clamp4(x: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::matrix::knn_graph::{KnnGraph, KnnGraphArgs};
+    use crate::matrix::test_support::fuzzy_edges;
     use nalgebra::DMatrix;
-
-    /// `(i, j, w)` from the fuzzy kNN graph of the rows of `data`.
-    pub(super) fn fuzzy_edges(data: &DMatrix<f32>, knn: usize) -> Vec<(usize, usize, f32)> {
-        let (graph, w) = KnnGraph::from_rows_fuzzy(
-            data,
-            KnnGraphArgs {
-                knn,
-                block_size: 256,
-                reciprocal: false,
-            },
-        )
-        .unwrap();
-        graph
-            .edges
-            .iter()
-            .zip(&w)
-            .map(|(&(i, j), &w)| (i, j, w))
-            .collect()
-    }
 
     /// The fuzzy kNN graph of uniform points in a square, and a random
     /// start for its layout.

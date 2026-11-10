@@ -393,10 +393,12 @@ impl Umap {
     ///
     /// The epochs are synchronous (see the module notes), so the layout
     /// differs from [`Umap::fit`]'s and is the same on every device up to
-    /// rounding. Start it from PCA: from there it keeps neighbours as well
-    /// as [`Umap::fit`], while from a random start it keeps fewer, as each
-    /// point moves by all its pulls at once. On CPU, [`Umap::fit`] is as
-    /// fast; this path is there for layouts that match across devices.
+    /// rounding. Start it from PCA or from
+    /// [`crate::matrix::landmark_init::landmark_init_2d`]: from there it
+    /// keeps neighbours as well as [`Umap::fit`], while from a random start
+    /// it keeps fewer, as each point moves by all its pulls at once. On
+    /// CPU, [`Umap::fit`] is as fast; this path is there for layouts that
+    /// match across devices.
     /// Returns row-major `n x 2`, centred.
     pub fn fit_on(
         &self,

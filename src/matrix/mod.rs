@@ -16,6 +16,7 @@ pub mod knn;
 pub mod knn_graph;
 pub mod knn_match;
 pub mod knockoff;
+pub mod landmark_init;
 pub mod layout;
 pub mod membership;
 pub mod mtx_io;

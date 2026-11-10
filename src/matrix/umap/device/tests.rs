@@ -1,7 +1,7 @@
-use super::super::tests::{fuzzy_edges, spacing, square_graph};
+use super::super::tests::{spacing, square_graph};
 use super::*;
-use crate::matrix::pca::{init_2d_from_scores, pc_scores};
-use crate::matrix::traits::MatOps;
+use crate::matrix::landmark_init::tests::{roll_from_landmarks, unrolled};
+use crate::matrix::test_support::{fuzzy_edges, pca_start};
 use nalgebra::DMatrix;
 use rand::{rngs::SmallRng, RngExt, SeedableRng};
 
@@ -154,11 +154,6 @@ fn embedded_square(n: usize, seed: u64) -> DMatrix<f32> {
     square * basis + noise
 }
 
-/// The PCA start layouts are fitted from in practice.
-fn pca_start(data: &DMatrix<f32>) -> Vec<f32> {
-    init_2d_from_scores(&pc_scores(&data.centre_columns(), 2, 0).unwrap(), 6)
-}
-
 /// From a PCA start the synchronous epochs keep neighbours as well as the
 /// lock-free CPU epochs do.
 fn check_neighbours_kept_on(dev: &Device) {
@@ -181,6 +176,27 @@ fn check_neighbours_kept_on(dev: &Device) {
 #[test]
 fn neighbours_are_kept_as_well_as_by_the_lock_free_fit() {
     check_neighbours_kept_on(&Device::Cpu);
+}
+
+/// From the landmark start the synchronous epochs keep a Swiss roll
+/// unrolled.
+fn check_unrolls_on(dev: &Device) {
+    let n = 1500;
+    let roll = roll_from_landmarks(n, 3);
+    let umap = Umap {
+        n_epochs: 300,
+        ..Umap::default()
+    };
+    let got = unrolled(
+        &roll.sheet,
+        &umap.fit_on(&roll.edges, n, &roll.start, dev).unwrap(),
+    );
+    assert!(got > 0.9, "unrolled {got}");
+}
+
+#[test]
+fn a_roll_started_unrolled_stays_so() {
+    check_unrolls_on(&Device::Cpu);
 }
 
 #[cfg(any(feature = "metal", feature = "cuda"))]
@@ -256,6 +272,11 @@ mod gpu {
     #[test]
     fn on_the_gpu_neighbours_are_kept_as_well_as_by_the_lock_free_fit() {
         check_neighbours_kept_on(&gpu());
+    }
+
+    #[test]
+    fn on_the_gpu_a_roll_started_unrolled_stays_so() {
+        check_unrolls_on(&gpu());
     }
 
     /// Timing against the lock-free fit, on a square embedded in 20

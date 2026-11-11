@@ -72,6 +72,24 @@ impl KnnGraph {
         Self::from_neighbours(data.nrows(), &lists, args.reciprocal)
     }
 
+    /// The fuzzy kNN graph of the rows of `data` as weighted edges
+    /// `(i, j, w)` (`i < j`, sorted), edges of zero weight dropped: the
+    /// form the layouts, [`crate::matrix::coarsen`] and PHATE on a graph
+    /// take.
+    pub fn fuzzy_edges_of_rows(
+        data: &DMatrix<f32>,
+        args: KnnGraphArgs,
+    ) -> anyhow::Result<Vec<(usize, usize, f32)>> {
+        let (graph, w) = Self::from_rows_fuzzy(data, args)?;
+        Ok(graph
+            .edges
+            .into_iter()
+            .zip(w)
+            .filter(|&(_, w)| w > 0.0)
+            .map(|((i, j), w)| (i, j, w))
+            .collect())
+    }
+
     /// [`KnnGraph::from_columns_fuzzy`] over row vectors.
     pub fn from_rows_fuzzy(
         data: &DMatrix<f32>,

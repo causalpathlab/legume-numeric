@@ -55,7 +55,7 @@ pub fn write_gz_members(path: &std::path::Path, text: &str, members: usize, bgzf
 
 /// `(i, j, w)` from the fuzzy kNN graph of the rows of `data`.
 pub fn fuzzy_edges(data: &nalgebra::DMatrix<f32>, knn: usize) -> Vec<(usize, usize, f32)> {
-    let (graph, w) = crate::matrix::knn_graph::KnnGraph::from_rows_fuzzy(
+    crate::matrix::knn_graph::KnnGraph::fuzzy_edges_of_rows(
         data,
         crate::matrix::knn_graph::KnnGraphArgs {
             knn,
@@ -63,13 +63,7 @@ pub fn fuzzy_edges(data: &nalgebra::DMatrix<f32>, knn: usize) -> Vec<(usize, usi
             reciprocal: false,
         },
     )
-    .unwrap();
-    graph
-        .edges
-        .iter()
-        .zip(&w)
-        .map(|(&(i, j), &w)| (i, j, w))
-        .collect()
+    .unwrap()
 }
 
 /// The PCA start layouts are fitted from in practice: the two leading PCs

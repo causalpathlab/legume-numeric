@@ -3,6 +3,7 @@ pub mod archetypal;
 pub mod branching;
 pub mod clap_defaults;
 pub mod clustering;
+pub mod coarsen;
 pub mod common_io;
 pub mod dense_mat_io;
 pub mod dmatrix_io;

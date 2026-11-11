@@ -112,7 +112,7 @@ pub fn phate_layout_2d(data: &Mat, args: &PhateArgs) -> Mat {
         args.alpha
     );
 
-    info!("PHATE 1/6: pairwise distances");
+    info!("PHATE: pairwise distances");
     // Materialize rows once so every inner distance reads a contiguous
     // slice; column-major `row()` views are strided and miss SIMD.
     let rows = rows_as_contiguous(data);
@@ -129,7 +129,7 @@ pub fn phate_layout_2d(data: &Mat, args: &PhateArgs) -> Mat {
             .collect()
     });
 
-    info!("PHATE 2/6: adaptive bandwidth σᵢ (knn={knn})");
+    info!("PHATE: adaptive bandwidth σᵢ (knn={knn})");
     let sigma: Vec<f32> = (0..n)
         .into_par_iter()
         .map(|i| {
@@ -141,7 +141,7 @@ pub fn phate_layout_2d(data: &Mat, args: &PhateArgs) -> Mat {
         })
         .collect();
 
-    info!("PHATE 3/6: alpha-decay kernel + row-normalize to diffusion operator");
+    info!("PHATE: alpha-decay kernel");
     let k_mat = build_nn_matrix(n, |j| {
         let mut col = vec![0.0f32; n];
         col[j] = 1.0;
@@ -156,6 +156,32 @@ pub fn phate_layout_2d(data: &Mat, args: &PhateArgs) -> Mat {
         }
         col
     });
+    phate_from_kernel(k_mat, args)
+}
+
+/// 2D PHATE of the `n` nodes of a given undirected graph (`(i, j, weight)`),
+/// diffusing on its weights in place of PHATE's alpha-decay kernel: for a
+/// kNN graph built once and shared, or the graph between pseudobulks that
+/// [`crate::matrix::coarsen::collapse`] makes of it.
+#[must_use]
+pub fn phate_layout_2d_on_graph(n: usize, edges: &[(usize, usize, f32)], args: &PhateArgs) -> Mat {
+    if n < 3 {
+        return Mat::zeros(n, 2);
+    }
+    info!("PHATE on a graph: {n} nodes, {} edges", edges.len());
+    let mut k_mat = Mat::zeros(n, n);
+    for &(i, j, w) in edges {
+        k_mat[(i, j)] += w;
+        k_mat[(j, i)] += w;
+    }
+    phate_from_kernel(k_mat, args)
+}
+
+/// PHATE from its kernel on: row-normalize to the diffusion operator,
+/// diffuse, potential distances, classical MDS and SMACOF.
+fn phate_from_kernel(k_mat: Mat, args: &PhateArgs) -> Mat {
+    let n = k_mat.nrows();
+    info!("PHATE: row-normalize the kernel to the diffusion operator");
     let mut p_mat = k_mat;
     for i in 0..n {
         let s: f32 = p_mat.row(i).iter().sum::<f32>().max(1e-12);
@@ -175,7 +201,7 @@ pub fn phate_layout_2d(data: &Mat, args: &PhateArgs) -> Mat {
     }
     .max(1);
     info!(
-        "PHATE 4/6: diffusion M = P^{t} ({})",
+        "PHATE: diffusion M = P^{t} ({})",
         if args.t == 0 {
             "auto t, von-Neumann-entropy knee"
         } else {
@@ -189,7 +215,7 @@ pub fn phate_layout_2d(data: &Mat, args: &PhateArgs) -> Mat {
     // collapsed the embedding. Exact power is O(n³ log t), fine at PHATE's n≲10³.
     let m_mat = matrix_power(&p_mat, t);
 
-    info!("PHATE 5/6: potential distance + classical MDS init");
+    info!("PHATE: potential distance + classical MDS init");
     let log_m = build_nn_matrix(n, |j| {
         (0..n).map(|i| -(m_mat[(i, j)].max(1e-12)).ln()).collect()
     });
@@ -210,7 +236,7 @@ pub fn phate_layout_2d(data: &Mat, args: &PhateArgs) -> Mat {
 
     let delta = build_nn_matrix(n, |j| (0..n).map(|i| pot_d2[(i, j)].sqrt()).collect());
     info!(
-        "PHATE 6/6: SMACOF metric MDS (max_iter={}, tol={:.0e})",
+        "PHATE: SMACOF metric MDS (max_iter={}, tol={:.0e})",
         args.mds_iter, args.mds_tol
     );
     smacof_2d(&delta, &y_init, args.mds_iter, args.mds_tol)
@@ -787,5 +813,89 @@ mod tests {
         let out = project_cells_nystrom(&query_kn, &landmark_kp, &landmark_coords, 2, 2.0);
         assert!((out[(0, 0)] - 5.0).abs() < 1.0, "x={}", out[(0, 0)]);
         assert!(out[(0, 1)].abs() < 1.0, "y={}", out[(0, 1)]);
+    }
+
+    /// PHATE on a given graph: the kNN graph of points on a line (each
+    /// linked to four either side, weaker with distance) is laid out in its
+    /// order.
+    #[test]
+    fn phate_on_a_chain_graph_keeps_its_order() {
+        let n = 60;
+        let edges: Vec<(usize, usize, f32)> = (0..n)
+            .flat_map(|i| {
+                (1..=4)
+                    .filter(move |s| i + s < n)
+                    .map(move |s| (i, i + s, (1.0 - s as f32).exp()))
+            })
+            .collect();
+        let y = phate_layout_2d_on_graph(n, &edges, &PhateArgs::default());
+        assert_eq!(y.shape(), (n, 2));
+        // Two nodes far apart on the chain are far apart in the layout,
+        // though the chain may bend.
+        let (mut on_chain, in_layout) = (Vec::new(), &mut Vec::new());
+        for i in 0..n {
+            for j in 0..i {
+                on_chain.push((i - j) as f32);
+                in_layout.push((y.row(i) - y.row(j)).norm());
+            }
+        }
+        let rho = crate::matrix::agreement::spearman(&on_chain, in_layout);
+        assert!(rho > 0.95, "{rho}");
+    }
+
+    /// A node with no edge still gets a finite place.
+    #[test]
+    fn phate_on_a_graph_places_a_node_with_no_edges() {
+        // A chain of 20 and node 20 on its own.
+        let edges: Vec<(usize, usize, f32)> = (0..19).map(|i| (i, i + 1, 1.0)).collect();
+        let y = phate_layout_2d_on_graph(21, &edges, &PhateArgs::default());
+        assert!(y.iter().all(|v| v.is_finite()), "{y}");
+        // Not flung far beyond the chain.
+        let reach = (0..20).map(|i| y.row(i).norm()).fold(0.0_f32, f32::max);
+        assert!(
+            y.row(20).norm() <= 2.0 * reach,
+            "{} vs {reach}",
+            y.row(20).norm()
+        );
+    }
+
+    /// PHATE on the kNN graph of separate groups keeps them apart.
+    #[test]
+    fn phate_on_a_graph_of_three_groups_keeps_them_apart() {
+        let centres = [[0.0_f32, 0.0], [10.0, 0.0], [5.0, 8.0]];
+        let per = 30;
+        let n = 3 * per;
+        let data = Mat::from_fn(n, 4, |i, c| {
+            let jit = ((i * 7 + c * 13) % 11) as f32 / 11.0 - 0.5;
+            if c < 2 {
+                centres[i / per][c] + jit
+            } else {
+                0.3 * jit
+            }
+        });
+        // With weak edges between the groups, as noisy kNN graphs have.
+        let mut edges = crate::matrix::test_support::fuzzy_edges(&data, 8);
+        for k in 0..30 {
+            let (i, j) = ((k * 7) % per, per + (k * 11) % (2 * per));
+            edges.push((i, j, 0.02));
+        }
+        let y = phate_layout_2d_on_graph(n, &edges, &PhateArgs::default());
+        assert!(y.iter().all(|v| v.is_finite()));
+        let centre = |g: usize| -> nalgebra::RowDVector<f32> {
+            (0..per).fold(nalgebra::RowDVector::zeros(2), |s, p| {
+                s + y.row(g * per + p)
+            }) / per as f32
+        };
+        let c: Vec<_> = (0..3).map(centre).collect();
+        let within = (0..n).map(|i| (y.row(i) - &c[i / per]).norm()).sum::<f32>() / n as f32;
+        for a in 0..3 {
+            for b in 0..a {
+                let between = (&c[a] - &c[b]).norm();
+                assert!(
+                    between > 2.0 * within,
+                    "groups {a}, {b}: {between} apart, spread {within}"
+                );
+            }
+        }
     }
 }

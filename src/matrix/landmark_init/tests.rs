@@ -113,7 +113,7 @@ fn a_few_shortcut_edges_do_not_fold_it() {
 
 /// Six groups of five Gaussian clusters in 50 dimensions, with labels: no
 /// kNN edge joins two clusters.
-fn clusters(n: usize, seed: u64) -> (Mat, Vec<usize>) {
+pub(crate) fn clusters(n: usize, seed: u64) -> (Mat, Vec<usize>) {
     let mut rng = SmallRng::seed_from_u64(seed);
     let groups = Mat::from_fn(6, 50, |_, _| rng.random_range(-6.0_f32..6.0));
     let centres = Mat::from_fn(30, 50, |r, c| {
@@ -153,7 +153,7 @@ fn pair_distances(m: &Mat) -> Vec<f32> {
 
 /// Rank correlation between the distances of the label means in `data`
 /// and in the layout `y`.
-fn arranged(data: &Mat, labels: &[usize], y: &[f32]) -> f32 {
+pub(crate) fn arranged(data: &Mat, labels: &[usize], y: &[f32]) -> f32 {
     let y = Mat::from_row_slice(labels.len(), 2, y);
     spearman(
         &pair_distances(&label_means(data, labels)),

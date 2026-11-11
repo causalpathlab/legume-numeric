@@ -1,12 +1,33 @@
-//! 2D layout primitives shared across the workspace: PHATE diffusion
-//! embedding and a generic alpha-decay-kernel Nyström projection for placing
-//! out-of-sample points (cells, genes, type anchors) onto an existing layout.
+//! 2D layout primitives shared across the workspace, pure functions on
+//! `nalgebra` matrices:
 //!
-//! These are pure functions on `nalgebra` matrices with no I/O and no CLI
-//! dependencies, so they can be consumed by `senna` (PB-landmark layout),
-//! `senna annotate-gem` (cell layout off the leiden kNN graph + feature
-//! placement), and any other caller. Originally `pub(crate)` inside senna;
-//! lifted here so faba can reuse them without duplication.
+//! - [`phate_layout_2d`] and [`phate_layout_2d_on_graph`]: PHATE diffusion
+//!   embedding, of features or of a given graph.
+//! - [`project_cells_nystrom`] and [`project_via_knn`]: place out-of-sample
+//!   points (cells, features, anchors) onto an existing layout.
+//!
+//! Layouts of a given weighted graph (`(i, j, weight)` edges, weights
+//! affinities), each laying out every connected piece on its own and
+//! placing the pieces apart:
+//!
+//! - [`stress_layout_2d_on_graph`]: stress majorization of shortest-path
+//!   lengths by stochastic gradient descent.
+//! - [`forceatlas2_layout_2d_on_graph`]: the ForceAtlas2 force-directed
+//!   layout.
+//! - [`diffusion_map_2d_on_graph`]: a diffusion map, eigenvectors of the
+//!   random walk.
+//! - [`radial_tree_layout_2d_on_graph`]: a radial drawing of the maximum
+//!   spanning tree.
+//! - [`sugiyama_layout_2d_on_graph`]: a layered drawing by breadth-first
+//!   level from a root.
+//! - [`lle_layout_2d_on_graph`]: modified locally linear embedding of
+//!   features, neighbours taken from the graph.
+//!
+//! With no I/O and no CLI dependencies, they can be consumed by `senna`
+//! (PB-landmark layout), `senna annotate-gem` (cell layout off the leiden
+//! kNN graph + feature placement), and any other caller. Originally
+//! `pub(crate)` inside senna; lifted here so faba can reuse them without
+//! duplication.
 
 use crate::matrix::knn_match::ColumnDict;
 use crate::matrix::traits::RandomizedAlgs;
@@ -15,6 +36,20 @@ use nalgebra::DMatrix;
 use rayon::prelude::*;
 
 type Mat = DMatrix<f32>;
+
+mod diffusion;
+mod forceatlas2;
+mod graph_prep;
+mod lle;
+mod radial;
+mod stress;
+mod sugiyama;
+pub use diffusion::diffusion_map_2d_on_graph;
+pub use forceatlas2::forceatlas2_layout_2d_on_graph;
+pub use lle::lle_layout_2d_on_graph;
+pub use radial::radial_tree_layout_2d_on_graph;
+pub use stress::stress_layout_2d_on_graph;
+pub use sugiyama::sugiyama_layout_2d_on_graph;
 
 ///////////
 // PHATE //

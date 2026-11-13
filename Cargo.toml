@@ -31,6 +31,8 @@ metal = [
     "tensor",
     "candle-core/metal",
     "candle-core/accelerate",
+    "dep:candle-metal-kernels",
+    "dep:objc2-metal",
     "candle-nn?/metal",
     "candle-nn?/accelerate",
 ]
@@ -72,6 +74,16 @@ env_logger = "0.11"
 [dependencies.candle-core]
 version = "0.10"
 default-features = false
+optional = true
+
+# Metal: compiling and dispatching the UMAP epoch kernel on candle's device.
+# Both are candle-core's own Metal deps; keep their versions with candle-core's.
+[dependencies.candle-metal-kernels]
+version = "0.10"
+optional = true
+
+[dependencies.objc2-metal]
+version = "0.3"
 optional = true
 
 [dependencies.candle-nn]

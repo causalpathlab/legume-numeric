@@ -1,4 +1,4 @@
-//! Fixture helpers shared by the io test modules.
+//! Fixture helpers shared by test modules.
 
 use std::io::Write;
 
@@ -51,4 +51,25 @@ pub fn write_gz_members(path: &std::path::Path, text: &str, members: usize, bgzf
         bytes.extend(enc.finish().expect("finish gz member"));
     }
     std::fs::write(path, bytes).expect("write gz file");
+}
+
+/// `(i, j, w)` from the fuzzy kNN graph of the rows of `data`.
+pub fn fuzzy_edges(data: &nalgebra::DMatrix<f32>, knn: usize) -> Vec<(usize, usize, f32)> {
+    crate::matrix::knn_graph::KnnGraph::fuzzy_edges_of_rows(
+        data,
+        crate::matrix::knn_graph::KnnGraphArgs {
+            knn,
+            block_size: 256,
+            reciprocal: false,
+        },
+    )
+    .unwrap()
+}
+
+/// The PCA start layouts are fitted from in practice: the two leading PCs
+/// of the centred rows of `data`, scaled to the SGD's range.
+pub fn pca_start(data: &nalgebra::DMatrix<f32>) -> Vec<f32> {
+    use crate::matrix::pca::{init_2d_from_scores, pc_scores};
+    use crate::matrix::traits::MatOps;
+    init_2d_from_scores(&pc_scores(&data.centre_columns(), 2, 0).unwrap(), 6)
 }

@@ -7,6 +7,7 @@ Numeric and ML foundation for the [legume](https://github.com/causalpathlab/legu
 | Module | Feature | Role |
 |--------|---------|------|
 | `leiden` | (always) | Vendored CWTS/10x Leiden port — see `NOTICE` |
+| `fast_math` | (always) | Fast, approximate `f32` `ln` and `ln Γ` increments, with a table for many counts against one value; see `NOTICE` |
 | `matrix` | `matrix` (default) | Matrix IO, KNN, layout, stats, randomized SVD, top-r symmetric eigensolver (`SymmetricTopEigen`) |
 | `param` | `param` (default) | Parametric / model helpers |
 | `candle` | `candle` | candle-core/nn training helpers |
@@ -24,4 +25,4 @@ Default features are `matrix` + `param` (CPU). Uses crates.io `candle-core` / `c
 
 ## License
 
-MIT. The `leiden` module includes third-party copyright (CWTS Leiden University / 10x Genomics); see `NOTICE`.
+MIT. The `leiden` module includes third-party copyright (CWTS Leiden University / 10x Genomics), and `fast_math` includes formulas under a BSD license (Paul Mineiro's fastapprox); see `NOTICE`.

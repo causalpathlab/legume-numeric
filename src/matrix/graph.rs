@@ -105,6 +105,36 @@ pub fn connected_components<G: WeightedGraph + ?Sized>(g: &G) -> Vec<usize> {
     label
 }
 
+/// Breadth-first sweep from `start`, taking each node's neighbours in the
+/// order the graph lists them. Returns the reached nodes in visiting order,
+/// each node's parent (`start` for itself, `usize::MAX` where not reached)
+/// and its depth in hops from `start` (0 where not reached).
+pub fn bfs<G: WeightedGraph + ?Sized>(g: &G, start: usize) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+    let n = g.num_nodes();
+    let mut parent = vec![usize::MAX; n];
+    let mut depth = vec![0; n];
+    let mut order = vec![start];
+    parent[start] = start;
+    let mut next = 0;
+    while let Some(&u) = order.get(next) {
+        next += 1;
+        for (v, _) in g.neighbors_with_weight(u) {
+            if parent[v] == usize::MAX {
+                parent[v] = u;
+                depth[v] = depth[u] + 1;
+                order.push(v);
+            }
+        }
+    }
+    (order, parent, depth)
+}
+
+/// A node farthest from `from` in hops: the last one a breadth-first sweep
+/// from `from` reaches, so among nodes equally far, the one reached last.
+pub fn far_end<G: WeightedGraph + ?Sized>(g: &G, from: usize) -> usize {
+    *bfs(g, from).0.last().expect("the start is reached")
+}
+
 /// Count of connected components.
 pub fn num_connected_components<G: WeightedGraph + ?Sized>(g: &G) -> usize {
     connected_components(g)
@@ -180,6 +210,20 @@ mod tests {
         assert_ne!(label[0], label[5]);
         assert_ne!(label[2], label[5]);
         assert_eq!(num_connected_components(&g), 3);
+    }
+
+    #[test]
+    fn bfs_gives_order_parents_and_depths_and_far_end_the_last_reached() {
+        let g = two_components();
+        let (order, parent, depth) = bfs(&g, 2);
+        assert_eq!(order, vec![2, 3, 4]);
+        assert_eq!((parent[2], parent[3], parent[4]), (2, 2, 3));
+        assert_eq!((depth[2], depth[3], depth[4]), (0, 1, 2));
+        assert_eq!(parent[0], usize::MAX);
+        assert_eq!(far_end(&g, 2), 4);
+        // From 3, nodes 2 and 4 are both one hop away; 4 is reached last.
+        assert_eq!(far_end(&g, 3), 4);
+        assert_eq!(far_end(&g, 5), 5);
     }
 
     #[test]

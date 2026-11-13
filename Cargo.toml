@@ -1,6 +1,6 @@
 [package]
 name = "legume-numeric"
-version = "0.10.0"
+version = "0.10.4"
 authors = ["Yongjin Park <ypp@stat.ubc.ca>"]
 edition = "2021"
 license = "MIT"
@@ -41,8 +41,7 @@ metal = [
 anyhow = "1.0"
 clap = { version = "4.5.20", features = ["derive"] }
 ctrlc = { version = "3", features = ["termination"] }
-flate2 = "1.0.34"
-num_cpus = "1.16.0"
+flate2 = { version = "1.0.34", default-features = false, features = ["zlib-rs"] }
 rayon = "1.10.0"
 tempfile = "3.2"
 
@@ -54,7 +53,6 @@ nalgebra-sparse = "0.11"
 num-traits = "0.2.19"
 
 approx = "0.5.1"
-serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 
 ndarray = { version = "0.17", features = ["rayon", "serde", "approx", "blas"], optional = true }
@@ -62,14 +60,18 @@ ndarray = { version = "0.17", features = ["rayon", "serde", "approx", "blas"], o
 instant-distance = "0.6"
 multiversion = "0.8"
 indicatif = { version = "^0.18", features = ["rayon"] }
-parquet = "59"
+# Only the low-level file/record API is used, never `parquet::arrow`, so the
+# arrow stack stays out. Every codec stays readable: files from other tools
+# (snappy from pyarrow, zstd from polars) must still open.
+parquet = { version = "59", default-features = false, features = ["snap", "brotli", "flate2-zlib-rs", "lz4", "zstd", "simdutf8"] }
 rustc-hash = "2.1"
 log = "0.4"
-zip = "9.0.4"
+# Zarr stores are zipped `Stored`; deflate and zstd cover other archivers.
+# bzip2, lzma, xz, ppmd, deflate64 and AES (refused anyway) are left out.
+zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs", "zstd"] }
 clustering = { version = "0.2", features = ["parallel"] }
 petgraph = "0.8"
 special = "0.13"
-env_logger = "0.11"
 
 [dependencies.candle-core]
 version = "0.10"
@@ -92,5 +94,7 @@ default-features = false
 optional = true
 
 [dev-dependencies]
+# AES only to write the encrypted archive that `unzip` must refuse.
+zip = { version = "9.0.4", default-features = false, features = ["aes-crypto", "deflate-flate2-zlib-rs", "zstd"] }
 insta = "1"
 mimalloc = "0.1"

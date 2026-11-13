@@ -72,6 +72,84 @@ pub trait RandomizedAlgs {
     ) -> anyhow::Result<(Self::OutMat, Self::DVec, Self::OutMat)>;
 }
 
+/// How [`SymmetricTopEigen::top_eigen_with`] iterates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TopEigenArgs {
+    /// Extra columns carried in the block beyond the `rank` wanted. They
+    /// speed up convergence of the last wanted pairs and are dropped at the
+    /// end.
+    pub oversample: usize,
+    /// Convergence: every returned pair has residual `‖A v − λ v‖ ≤ tol ·
+    /// ‖A‖`, with `‖A‖` estimated as the largest eigenvalue magnitude.
+    pub tol: f64,
+    /// Cap on filter-and-project cycles. Each cycle costs up to
+    /// `max_degree + 1` products of the matrix with an `n × (rank +
+    /// oversample)` block.
+    pub max_iters: usize,
+    /// Cap on the Chebyshev filter degree per cycle. The degree actually
+    /// used is lowered so the block stays well conditioned in `T`.
+    pub max_degree: usize,
+}
+
+impl Default for TopEigenArgs {
+    fn default() -> Self {
+        Self {
+            oversample: 10,
+            tol: 1e-6,
+            max_iters: 100,
+            max_degree: 16,
+        }
+    }
+}
+
+/// Leading eigenpairs from [`SymmetricTopEigen`].
+#[derive(Clone, Debug)]
+pub struct TopEigen<M, V> {
+    /// The largest algebraic eigenvalues, in descending order.
+    pub values: V,
+    /// Orthonormal eigenvectors, one column per value.
+    pub vectors: M,
+    /// Filter-and-project cycles run (0 when the start block had already
+    /// converged, as a warm start from the answer does).
+    pub iters: usize,
+    /// Whether every pair met `tol` within `max_iters`.
+    pub converged: bool,
+}
+
+/// The `rank` largest *algebraic* eigenvalues of a real symmetric, possibly
+/// indefinite, matrix and their eigenvectors, without a full eigensolve.
+///
+/// Unlike [`RandomizedAlgs::rsvd`], which ranks by `|λ|`, a large negative
+/// eigenvalue is never taken for a leading one. The solver is a
+/// Chebyshev-filtered block subspace iteration (Zhou and Saad 2007): a
+/// short Lanczos run bounds the spectrum, a polynomial in the matrix damps
+/// everything below the current block, and a Rayleigh–Ritz projection
+/// extracts the pairs. Each cycle costs `O(n² (rank + oversample))`.
+/// The matrix is assumed symmetric; only `A x` products are taken. With
+/// `rank ≥ n`, or a block too wide to be worth iterating, it falls back to a
+/// dense eigensolve and returns all `min(rank, n)` pairs.
+pub trait SymmetricTopEigen {
+    type Mat;
+    type DVec;
+
+    /// [`top_eigen_with`](Self::top_eigen_with) with default arguments and
+    /// no warm start.
+    fn top_eigen(&self, rank: usize) -> anyhow::Result<TopEigen<Self::Mat, Self::DVec>> {
+        self.top_eigen_with(rank, &TopEigenArgs::default(), None)
+    }
+
+    /// The `rank` leading eigenpairs. `warm_start` is an `n × w` basis to
+    /// start from, such as the vectors of a previous call on a nearby
+    /// matrix; its first `min(w, rank + oversample)` columns seed the block
+    /// and seeded random columns fill the rest.
+    fn top_eigen_with(
+        &self,
+        rank: usize,
+        args: &TopEigenArgs,
+        warm_start: Option<&Self::Mat>,
+    ) -> anyhow::Result<TopEigen<Self::Mat, Self::DVec>>;
+}
+
 /// Convert to and from the vector of triplets
 pub trait MatTriplets {
     type Mat;

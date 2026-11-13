@@ -7,7 +7,7 @@ Numeric and ML foundation for the [legume](https://github.com/causalpathlab/legu
 | Module | Feature | Role |
 |--------|---------|------|
 | `leiden` | (always) | Vendored CWTS/10x Leiden port — see `NOTICE` |
-| `matrix` | `matrix` (default) | Matrix IO, KNN, layout, stats |
+| `matrix` | `matrix` (default) | Matrix IO, KNN, layout, stats, randomized SVD, top-r symmetric eigensolver (`SymmetricTopEigen`) |
 | `param` | `param` (default) | Parametric / model helpers |
 | `candle` | `candle` | candle-core/nn training helpers |
 | `mcmc` | `mcmc` | MCMC engine: elliptical slice sampler, generic chain runner (`McmcModel`, `run_mcmc`) and diagnostics (effective sample size, split R̂) |

@@ -1,5 +1,3 @@
-use core::f64;
-
 use candle_core::{Result, Tensor};
 use candle_nn::ops;
 

@@ -21,7 +21,7 @@ legume-numeric = { version = "0.9", features = ["candle", "mcmc"] }
 # features = ["candle", "mcmc", "cuda"]  # or "metal"
 ```
 
-Default features are `matrix` + `param` (CPU). Uses crates.io `candle-core` / `candle-nn` 0.10.
+Default features are `matrix`, `param`, `tensor` and `ndarray` (CPU). With `default-features = false` and no features the crate is only `leiden` and `fast_math`, with a minimal dependency set. Uses crates.io `candle-core` / `candle-nn` 0.10.
 
 ## License
 

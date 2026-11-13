@@ -62,8 +62,8 @@ impl P2Quantile {
                 .unwrap_or(3)
         };
         // 2. Increment positions of the markers above the cell.
-        for i in (k + 1)..5 {
-            self.n[i] += 1.0;
+        for n in self.n.iter_mut().skip(k + 1) {
+            *n += 1.0;
         }
         // 3. Advance the desired positions.
         for i in 0..5 {

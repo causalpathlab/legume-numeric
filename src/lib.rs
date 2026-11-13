@@ -14,8 +14,9 @@
 //! ndarray `Array2` support: IO, sampling, `ndarray_stat`, `ndarray_gamma`
 //! and kNN from ndarray views. `candle` builds on `tensor`. `metal` and
 //! `cuda` also run matrix code on the GPU (`Umap::fit_on`). A crate
-//! that only needs `DMatrix` sets `default-features = false` and links
-//! neither candle nor ndarray.
+//! that only needs `DMatrix` sets `default-features = false` with `matrix`
+//! (or `param`) and links neither candle nor ndarray; with no features the
+//! crate is `leiden` and `fast_math` alone.
 
 pub mod fast_math;
 pub mod leiden;

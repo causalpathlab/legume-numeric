@@ -122,10 +122,7 @@ where
     let buf_reader: Box<dyn BufRead> = open_buf_reader(input_file)?;
 
     fn is_not_comment_line(line: &str) -> bool {
-        if line.starts_with('#') || line.starts_with('%') {
-            return false;
-        }
-        true
+        !(line.starts_with('#') || line.starts_with('%'))
     }
 
     let lines_raw: Vec<Box<str>> = buf_reader

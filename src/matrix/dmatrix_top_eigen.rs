@@ -427,6 +427,52 @@ mod tensor {
     }
 }
 
+#[cfg(feature = "ndarray")]
+mod ndarray_impl {
+    use super::*;
+    use ndarray::{Array1, Array2, ShapeBuilder};
+
+    fn to_dmatrix<T: EigScalar>(a: &Array2<T>) -> DMatrix<T> {
+        let (n, m) = a.dim();
+        DMatrix::from_fn(n, m, |i, j| a[(i, j)])
+    }
+
+    fn to_array<T: EigScalar>(m: &DMatrix<T>) -> Array2<T> {
+        // Column-major storage is Fortran order.
+        Array2::from_shape_vec(m.shape().f(), m.as_slice().to_vec())
+            .expect("shape matches the buffer")
+    }
+
+    /// Copies the matrix into a `DMatrix` once (`n²`, small next to the
+    /// iteration) and runs the dense solver: its products are parallel,
+    /// and ndarray's `blas` feature links no BLAS of its own.
+    // The bound is `EigScalar` spelled out: a private trait cannot bound a
+    // public impl.
+    impl<T> SymmetricTopEigen for Array2<T>
+    where
+        T: nalgebra::RealField + Float + Copy + Send + Sync,
+    {
+        type Mat = Array2<T>;
+        type DVec = Array1<T>;
+
+        fn top_eigen_with(
+            &self,
+            rank: usize,
+            args: &TopEigenArgs,
+            warm_start: Option<&Self::Mat>,
+        ) -> anyhow::Result<TopEigen<Self::Mat, Self::DVec>> {
+            let warm = warm_start.map(to_dmatrix);
+            let out = to_dmatrix(self).top_eigen_with(rank, args, warm.as_ref())?;
+            Ok(TopEigen {
+                values: Array1::from_vec(out.values.as_slice().to_vec()),
+                vectors: to_array(&out.vectors),
+                iters: out.iters,
+                converged: out.converged,
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "dmatrix_top_eigen_tests.rs"]
 mod tests;

@@ -277,6 +277,39 @@ fn tensor_matches_dmatrix() {
         .is_err());
 }
 
+#[cfg(feature = "ndarray")]
+#[test]
+fn ndarray_matches_dmatrix() {
+    use ndarray::Array2;
+    let a = planted(300, &[10.0, 8.0, 6.0, 5.0, 4.0], &[-25.0], 10);
+    let want = a.top_eigen(5).unwrap();
+    let arr = Array2::from_shape_fn((300, 300), |(i, j)| a[(i, j)]);
+    let got = arr.top_eigen(5).unwrap();
+    assert!(got.converged);
+    assert_eq!(got.vectors.dim(), (300, 5));
+    for i in 0..5 {
+        assert!((got.values[i] - want.values[i]).abs() < 1e-9);
+        let cos: f64 = (0..300)
+            .map(|j| got.vectors[(j, i)] * want.vectors[(j, i)])
+            .sum();
+        assert!(cos > 1.0 - 1e-9, "vector {i}: cosine {cos}");
+    }
+
+    // f32, a warm start, the edge cases, and a non-square input.
+    let arr32 = arr.mapv(|x| x as f32);
+    let args = TopEigenArgs {
+        tol: 1e-4,
+        ..TopEigenArgs::default()
+    };
+    let warm32 = got.vectors.mapv(|x| x as f32);
+    let warm = arr32.top_eigen_with(5, &args, Some(&warm32)).unwrap();
+    assert!(warm.converged);
+    assert!((warm.values[0] as f64 - want.values[0]).abs() < 1e-3);
+    assert_eq!(arr.top_eigen(0).unwrap().vectors.dim(), (300, 0));
+    assert_eq!(arr.top_eigen(400).unwrap().values.len(), 300);
+    assert!(Array2::<f64>::zeros((3, 4)).top_eigen(1).is_err());
+}
+
 /// A principal-axis-factoring matrix like data-beans' simulator fits: the
 /// sample correlation of a `factors`-factor model with communalities on the
 /// diagonal, which leaves it indefinite.

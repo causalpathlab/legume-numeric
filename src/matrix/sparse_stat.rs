@@ -4,23 +4,88 @@ use crate::matrix::parquet::{
 };
 use crate::matrix::traits::RunningStatOps;
 use nalgebra_sparse::CscMatrix;
-use num_traits::{Float, ToPrimitive, Zero};
+use num_traits::Float;
 use parquet::basic::Type as ParquetType;
-use std::fmt::Display;
-use std::iter::Sum;
-use std::ops::AddAssign;
+use std::marker::PhantomData;
 
 const STAT_COLUMN_NAMES: [&str; 4] = ["nnz", "tot", "mu", "sig"];
 
 /// Denominator for mean/variance: clamp to a tiny positive to avoid
 /// divide-by-zero when no samples have been accumulated yet.
-fn safe_denom<T: Float>(n: usize) -> T {
-    let n = T::from(n).unwrap_or(T::one());
-    if n > T::zero() {
-        n
+fn safe_denom(n: usize) -> f64 {
+    if n > 0 {
+        n as f64
     } else {
-        T::from(1e-8).unwrap_or(T::one())
+        1e-8
     }
+}
+
+/// An input value, widened to the f64 the sums are kept in.
+#[inline]
+fn wide<T: Float>(v: T) -> f64 {
+    v.to_f64().unwrap_or(f64::NAN)
+}
+
+/// An f64 result, narrowed back to the caller's element type.
+#[inline]
+fn narrow<T: Float>(v: f64) -> T {
+    T::from(v).unwrap_or_else(T::nan)
+}
+
+fn narrow_all<T: Float>(v: &[f64]) -> Vec<T> {
+    v.iter().map(|&x| narrow(x)).collect()
+}
+
+/// Per-entry mean, variance and sd from sums kept in f64, narrowed to `U`
+/// in the same pass. The variance is the one-pass `s2 / n - mu^2`, clamped
+/// at zero so rounding cannot make a constant entry's sd NaN. (Welford would
+/// need every observation, and these see only stored nonzeros; with f64 sums
+/// the one-pass error is about (mu / sigma)^2 * 1e-16.)
+fn mean_of<U: Float>(s1: &[f64], n: f64) -> Vec<U> {
+    s1.iter().map(|&s| narrow(s / n)).collect()
+}
+
+#[inline]
+fn variance_at(s1: f64, s2: f64, n: f64) -> f64 {
+    let mu = s1 / n;
+    (s2 / n - mu * mu).max(0.0)
+}
+
+fn variance_of<U: Float>(s1: &[f64], s2: &[f64], n: f64) -> Vec<U> {
+    s1.iter()
+        .zip(s2)
+        .map(|(&a, &b)| narrow(variance_at(a, b, n)))
+        .collect()
+}
+
+fn sd_of<U: Float>(s1: &[f64], s2: &[f64], n: f64) -> Vec<U> {
+    s1.iter()
+        .zip(s2)
+        .map(|(&a, &b)| narrow(variance_at(a, b, n).sqrt()))
+        .collect()
+}
+
+/// (npos, sum, mean, std), narrowed to `U`.
+fn stat_vecs<U: Float>(
+    npos: &[f64],
+    s1: &[f64],
+    s2: &[f64],
+    n: f64,
+) -> (Vec<U>, Vec<U>, Vec<U>, Vec<U>) {
+    (
+        narrow_all(npos),
+        narrow_all(s1),
+        mean_of(s1, n),
+        sd_of(s1, s2, n),
+    )
+}
+
+/// Adds one value to an entry's count of positives and running sums.
+#[inline]
+fn accumulate(npos: &mut f64, s1: &mut f64, s2: &mut f64, v: f64) {
+    *npos += if v > 0.0 { 1.0 } else { 0.0 };
+    *s1 += v;
+    *s2 += v * v;
 }
 
 /// Running statistics that accepts sparse column input but stores
@@ -30,6 +95,9 @@ fn safe_denom<T: Float>(n: usize) -> T {
 /// data is sparse and has many rows, as it avoids materializing dense
 /// matrices during reads.
 ///
+/// Values come in as `T` and results go out as `T`, but the counts and
+/// sums are kept in f64 whatever `T` is: an f32 sum stops counting exactly
+/// past 2^24, and the one-pass variance loses its digits to cancellation.
 #[derive(Clone)]
 pub struct SparseRunningStatistics<T>
 where
@@ -37,14 +105,15 @@ where
 {
     nrows: usize,
     ncols_processed: usize,
-    npos: Vec<T>,
-    s1: Vec<T>,
-    s2: Vec<T>,
+    npos: Vec<f64>,
+    s1: Vec<f64>,
+    s2: Vec<f64>,
+    _value: PhantomData<T>,
 }
 
 impl<T> SparseRunningStatistics<T>
 where
-    T: Float + AddAssign + Sum + Zero,
+    T: Float,
 {
     /// Create a new SparseRunningStatistics object
     ///
@@ -55,9 +124,10 @@ where
         SparseRunningStatistics {
             nrows,
             ncols_processed: 0,
-            npos: vec![T::zero(); nrows],
-            s1: vec![T::zero(); nrows],
-            s2: vec![T::zero(); nrows],
+            npos: vec![0.0; nrows],
+            s1: vec![0.0; nrows],
+            s2: vec![0.0; nrows],
+            _value: PhantomData,
         }
     }
 
@@ -67,12 +137,9 @@ where
         debug_assert_eq!(row_indices.len(), values.len());
 
         for (&row, &val) in row_indices.iter().zip(values.iter()) {
-            if val.is_finite() {
-                if val > T::zero() {
-                    self.npos[row] += T::one();
-                }
-                self.s1[row] += val;
-                self.s2[row] += val * val;
+            let v = wide(val);
+            if v.is_finite() {
+                accumulate(&mut self.npos[row], &mut self.s1[row], &mut self.s2[row], v);
             }
         }
         self.ncols_processed += 1;
@@ -86,13 +153,13 @@ where
         self.ncols_processed
     }
 
-    fn denom(&self) -> T {
-        safe_denom::<T>(self.ncols_processed)
+    fn denom(&self) -> f64 {
+        safe_denom(self.ncols_processed)
     }
 
     /// Convert to owned vectors (npos, sum, mean, std)
     pub fn to_vecs(&self) -> (Vec<T>, Vec<T>, Vec<T>, Vec<T>) {
-        (self.npos.clone(), self.s1.clone(), self.mean(), self.std())
+        stat_vecs(&self.npos, &self.s1, &self.s2, self.denom())
     }
 
     /// Add columns from a CscMatrix
@@ -113,52 +180,32 @@ where
     /// produce — useful when an upstream coarsening step yields a dense
     /// `[D, n]` intermediate we don't want to re-sparsify.
     ///
-    /// Loop is structured for autovectorization: hoists the running-sum
-    /// and running-square accumulations through `zip_eq` over independent
-    /// `&mut` slices (no aliasing), and uses a branchless `1/0` mask
-    /// for the `npos` increment so the compiler can emit `cmov` /
-    /// `vmaskmovps` instead of a control-flow branch per element.
+    /// Loop is structured for autovectorization: the running sums go
+    /// through independent `&mut` slices (no aliasing), and the `npos`
+    /// increment is a branchless `1/0` mask, so the compiler can emit
+    /// `cmov` / masked moves instead of a branch per element.
     pub fn add_dense_column(&mut self, values: &[T]) {
-        debug_assert_eq!(values.len(), self.nrows);
-        let zero = T::zero();
-        let one = T::one();
-        for ((v_in, npos), (s1, s2)) in values
-            .iter()
-            .zip(self.npos.iter_mut())
-            .zip(self.s1.iter_mut().zip(self.s2.iter_mut()))
-        {
-            let v = *v_in;
-            // Mask non-finite to zero so finite-only invariant holds
-            // through the rest without branching the `is_finite` check.
-            let v = if v.is_finite() { v } else { zero };
-            // Branchless `+= (v > 0) as T`: compiler emits cmov.
-            let pos = if v > zero { one } else { zero };
-            *npos += pos;
-            *s1 += v;
-            *s2 += v * v;
-        }
-        self.ncols_processed += 1;
+        self.add_dense_column_scaled(values, T::one());
     }
 
     /// [`Self::add_dense_column`] with every value scaled by `scale` on the
     /// way in. Folding the multiply into the accumulation loop touches each
     /// element once, where scale-into-a-buffer-then-add would write and
     /// re-read the whole column.
+    #[inline]
     pub fn add_dense_column_scaled(&mut self, values: &[T], scale: T) {
         debug_assert_eq!(values.len(), self.nrows);
-        let zero = T::zero();
-        let one = T::one();
+        let scale = wide(scale);
         for ((v_in, npos), (s1, s2)) in values
             .iter()
             .zip(self.npos.iter_mut())
             .zip(self.s1.iter_mut().zip(self.s2.iter_mut()))
         {
-            let v = *v_in * scale;
-            let v = if v.is_finite() { v } else { zero };
-            let pos = if v > zero { one } else { zero };
-            *npos += pos;
-            *s1 += v;
-            *s2 += v * v;
+            let v = wide(*v_in) * scale;
+            // Mask non-finite to zero so the finite-only invariant holds
+            // without branching on `is_finite`.
+            let v = if v.is_finite() { v } else { 0.0 };
+            accumulate(npos, s1, s2, v);
         }
         self.ncols_processed += 1;
     }
@@ -199,7 +246,7 @@ where
 
 impl<T> SparseRunningStatistics<T>
 where
-    T: Float + AddAssign + Sum + Zero + Display + ToPrimitive,
+    T: Float,
 {
     /// Save the statistics to a file (parquet if `filename` ends with
     /// `.parquet`, otherwise a separator-delimited text file).
@@ -220,13 +267,7 @@ where
 
     /// Get statistics as vectors (nnz, tot, mu, sig) converted to f32
     pub fn to_f32_vecs(&self) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
-        let to_f32_slice =
-            |v: &[T]| -> Vec<f32> { v.iter().map(|x| x.to_f32().unwrap_or(0.0)).collect() };
-        let nnz = to_f32_slice(&self.npos);
-        let tot = to_f32_slice(&self.s1);
-        let mu = to_f32_slice(&self.mean());
-        let sig = to_f32_slice(&self.std());
-        (nnz, tot, mu, sig)
+        stat_vecs(&self.npos, &self.s1, &self.s2, self.denom())
     }
 
     /// Convert statistics to string vectors for output
@@ -239,10 +280,7 @@ where
             );
         }
 
-        let nnz = self.count_positives();
-        let tot = self.sum();
-        let mu = self.mean();
-        let sig = self.std();
+        let (nnz, tot, mu, sig) = self.to_vecs();
 
         let out: Vec<Box<str>> = (0..self.nrows)
             .map(|i| {
@@ -275,20 +313,23 @@ where
 /// CSC slabs are consumed directly — no triplet materialization — and each
 /// slab only needs to know its starting column offset in the global index
 /// space.
+///
+/// As in [`SparseRunningStatistics`], the counts and sums are kept in f64.
 #[derive(Clone)]
 pub struct SparseColumnRunningStatistics<T>
 where
     T: Float,
 {
     nrows: usize,
-    npos: Vec<T>,
-    s1: Vec<T>,
-    s2: Vec<T>,
+    npos: Vec<f64>,
+    s1: Vec<f64>,
+    s2: Vec<f64>,
+    _value: PhantomData<T>,
 }
 
 impl<T> SparseColumnRunningStatistics<T>
 where
-    T: Float + AddAssign + Sum + Zero,
+    T: Float,
 {
     /// Create a new per-column running statistics accumulator.
     ///
@@ -300,9 +341,10 @@ where
     pub fn new(ncols: usize, nrows: usize) -> Self {
         Self {
             nrows,
-            npos: vec![T::zero(); ncols],
-            s1: vec![T::zero(); ncols],
-            s2: vec![T::zero(); ncols],
+            npos: vec![0.0; ncols],
+            s1: vec![0.0; ncols],
+            s2: vec![0.0; ncols],
+            _value: PhantomData,
         }
     }
 
@@ -331,14 +373,11 @@ where
                         continue;
                     }
                 }
-                if !val.is_finite() {
+                let v = wide(val);
+                if !v.is_finite() {
                     continue;
                 }
-                if val > T::zero() {
-                    self.npos[c] += T::one();
-                }
-                self.s1[c] += val;
-                self.s2[c] += val * val;
+                accumulate(&mut self.npos[c], &mut self.s1[c], &mut self.s2[c], v);
             }
         }
     }
@@ -351,14 +390,14 @@ where
         self.nrows
     }
 
-    fn denom(&self) -> T {
-        safe_denom::<T>(self.nrows)
+    fn denom(&self) -> f64 {
+        safe_denom(self.nrows)
     }
 }
 
 impl<T> SparseColumnRunningStatistics<T>
 where
-    T: Float + AddAssign + Sum + Zero + Display + ToPrimitive,
+    T: Float,
 {
     /// Save the per-column statistics to a file (parquet if `filename`
     /// ends with `.parquet`, otherwise a separator-delimited text file).
@@ -379,55 +418,40 @@ where
 
     /// Get statistics as vectors (nnz, tot, mu, sig) converted to f32
     pub fn to_f32_vecs(&self) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
-        let to_f32_slice =
-            |v: &[T]| -> Vec<f32> { v.iter().map(|x| x.to_f32().unwrap_or(0.0)).collect() };
-        let nnz = to_f32_slice(&self.npos);
-        let tot = to_f32_slice(&self.s1);
-        let mu = to_f32_slice(&self.mean());
-        let sig = to_f32_slice(&self.std());
-        (nnz, tot, mu, sig)
+        stat_vecs(&self.npos, &self.s1, &self.s2, self.denom())
     }
 }
 
 impl<T> RunningStatOps<T> for SparseColumnRunningStatistics<T>
 where
-    T: Float + AddAssign + Sum + Zero,
+    T: Float,
 {
     type Output = Vec<T>;
 
     fn clear(&mut self) {
-        self.npos.fill(T::zero());
-        self.s1.fill(T::zero());
-        self.s2.fill(T::zero());
+        self.npos.fill(0.0);
+        self.s1.fill(0.0);
+        self.s2.fill(0.0);
     }
 
     fn count_positives(&self) -> Vec<T> {
-        self.npos.clone()
+        narrow_all(&self.npos)
     }
 
     fn sum(&self) -> Vec<T> {
-        self.s1.clone()
+        narrow_all(&self.s1)
     }
 
     fn mean(&self) -> Vec<T> {
-        let n = self.denom();
-        self.s1.iter().map(|&s| s / n).collect()
+        mean_of(&self.s1, self.denom())
     }
 
     fn variance(&self) -> Vec<T> {
-        let n = self.denom();
-        self.s1
-            .iter()
-            .zip(self.s2.iter())
-            .map(|(&s1, &s2)| {
-                let mu = s1 / n;
-                s2 / n - mu * mu
-            })
-            .collect()
+        variance_of(&self.s1, &self.s2, self.denom())
     }
 
     fn std(&self) -> Vec<T> {
-        self.variance().into_iter().map(|v| v.sqrt()).collect()
+        sd_of(&self.s1, &self.s2, self.denom())
     }
 }
 
@@ -601,7 +625,7 @@ pub fn save_grouped_stats_parquet_cols(
     write_named_table(filename, key_cols[0].0, &keys[0], &columns)
 }
 
-fn format_value<T: Float + Display>(v: T) -> String {
+fn format_value<T: Float>(v: T) -> String {
     let v_f64 = v.to_f64().unwrap_or(0.0);
     if v_f64.abs() > 1e-4 {
         format!("{:.4}", v_f64)
@@ -617,50 +641,41 @@ fn format_value<T: Float + Display>(v: T) -> String {
 
 impl<T> RunningStatOps<T> for SparseRunningStatistics<T>
 where
-    T: Float + AddAssign + Sum + Zero,
+    T: Float,
 {
     type Output = Vec<T>;
 
     fn clear(&mut self) {
         self.ncols_processed = 0;
-        self.npos.fill(T::zero());
-        self.s1.fill(T::zero());
-        self.s2.fill(T::zero());
+        self.npos.fill(0.0);
+        self.s1.fill(0.0);
+        self.s2.fill(0.0);
     }
 
     /// Count of positive (non-zero) values per row
     fn count_positives(&self) -> Vec<T> {
-        self.npos.clone()
+        narrow_all(&self.npos)
     }
 
     /// Sum per row
     fn sum(&self) -> Vec<T> {
-        self.s1.clone()
+        narrow_all(&self.s1)
     }
 
     /// Mean per row
     /// Uses ncols_processed as the denominator (implicit zeros count)
     fn mean(&self) -> Vec<T> {
-        let n = self.denom();
-        self.s1.iter().map(|&s| s / n).collect()
+        mean_of(&self.s1, self.denom())
     }
 
     /// Variance per row
     fn variance(&self) -> Vec<T> {
-        let n = self.denom();
-        self.s1
-            .iter()
-            .zip(self.s2.iter())
-            .map(|(&s1, &s2)| {
-                let mu = s1 / n;
-                s2 / n - mu * mu
-            })
-            .collect()
+        variance_of(&self.s1, &self.s2, self.denom())
     }
 
     /// Standard deviation per row
     fn std(&self) -> Vec<T> {
-        self.variance().into_iter().map(|v| v.sqrt()).collect()
+        sd_of(&self.s1, &self.s2, self.denom())
     }
 }
 
@@ -730,6 +745,65 @@ mod tests {
         let mean = stat.mean();
         assert!((mean[0] - 2.0).abs() < 1e-10);
         assert!((mean[1] - 1.0).abs() < 1e-10);
+    }
+
+    /// An f32 running sum stops counting exactly at 2^24: 1.0 added to
+    /// 16_777_216.0f32 is 16_777_216.0f32. The sums are f64, so they don't.
+    #[test]
+    fn f32_sums_stay_exact_past_two_to_the_24() {
+        let n = (1usize << 24) + 10;
+        let mut stat = SparseRunningStatistics::<f32>::new(1);
+        for _ in 0..n {
+            stat.add_sparse_column(&[0], &[1.0]);
+        }
+        // n is even, so it is representable in f32: the sum must hit it exactly.
+        assert_eq!(stat.sum(), vec![n as f32]);
+        assert_eq!(stat.count_positives(), vec![n as f32]);
+        assert_eq!(stat.std(), vec![0.0]);
+    }
+
+    /// A row with a large mean and a small spread: the one-pass variance in
+    /// f32 cancels to noise (or below zero, giving a NaN sd); in f64 it holds.
+    #[test]
+    fn f32_variance_of_large_mean_small_spread() {
+        let mut stat = SparseRunningStatistics::<f32>::new(1);
+        for j in 0..10_000 {
+            let v = 1000.0f32 + if j % 2 == 0 { 0.5 } else { -0.5 };
+            stat.add_dense_column(&[v]);
+        }
+        let var = stat.variance()[0];
+        assert!((var - 0.25).abs() < 1e-4, "variance {var}");
+        assert!((stat.std()[0] - 0.5).abs() < 1e-4);
+    }
+
+    /// A constant row has variance zero, never a negative rounding residue
+    /// whose square root is NaN.
+    #[test]
+    fn constant_row_has_zero_sd() {
+        let mut stat = SparseRunningStatistics::<f32>::new(1);
+        let mut col = SparseColumnRunningStatistics::<f32>::new(1, 1000);
+        for _ in 0..1000 {
+            stat.add_dense_column(&[0.1]);
+        }
+        let mut coo = nalgebra_sparse::CooMatrix::<f32>::new(1000, 1);
+        for i in 0..1000 {
+            coo.push(i, 0, 0.1);
+        }
+        col.add_csc(&CscMatrix::from(&coo), 0);
+        assert!(stat.variance()[0] >= 0.0);
+        assert!(!stat.std()[0].is_nan());
+        assert!(col.variance()[0] >= 0.0);
+        assert!(!col.std()[0].is_nan());
+    }
+
+    #[test]
+    fn scaled_dense_column_matches_prescaled() {
+        let mut a = SparseRunningStatistics::<f32>::new(3);
+        let mut b = SparseRunningStatistics::<f32>::new(3);
+        a.add_dense_column_scaled(&[1.0, 0.0, f32::NAN], 2.0);
+        b.add_dense_column(&[2.0, 0.0, 0.0]);
+        assert_eq!(a.to_vecs(), b.to_vecs());
+        assert_eq!(a.count_positives(), vec![1.0, 0.0, 0.0]);
     }
 
     #[test]

@@ -8,7 +8,7 @@ Numeric and ML foundation for the [legume](https://github.com/causalpathlab/legu
 |--------|---------|------|
 | `leiden` | (always) | Vendored CWTS/10x Leiden port — see `NOTICE` |
 | `fast_math` | (always) | Fast, approximate `f32` `ln` and `ln Γ` increments, with a table for many counts against one value; see `NOTICE` |
-| `matrix` | `matrix` (default) | Matrix IO, KNN, layout, stats, randomized SVD, top-r symmetric eigensolver (`SymmetricTopEigen`) |
+| `matrix` | `matrix` (default) | Matrix IO, KNN, layout, stats, randomized SVD, top-r symmetric eigensolver (`SymmetricTopEigen`), Harmony batch correction of an embedding (`harmony::harmonize`) |
 | `param` | `param` (default) | Parametric / model helpers |
 | `candle` | `candle` | candle-core/nn training helpers |
 | `mcmc` | `mcmc` | MCMC engine: elliptical slice sampler, generic chain runner (`McmcModel`, `run_mcmc`) and diagnostics (effective sample size, split R̂) |
@@ -21,7 +21,7 @@ legume-numeric = { version = "0.9", features = ["candle", "mcmc"] }
 # features = ["candle", "mcmc", "cuda"]  # or "metal"
 ```
 
-Default features are `matrix` + `param` (CPU). Uses crates.io `candle-core` / `candle-nn` 0.10.
+Default features are `matrix`, `param`, `tensor` and `ndarray` (CPU). With `default-features = false` and no features the crate is only `leiden` and `fast_math`, with a minimal dependency set. Uses crates.io `candle-core` / `candle-nn` 0.10.
 
 ## License
 

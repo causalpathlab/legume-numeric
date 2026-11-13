@@ -8,6 +8,7 @@ use crate::matrix::knn_graph::{self, KnnGraph, KnnGraphArgs};
 use crate::matrix::traits::MatOps;
 use log::info;
 use nalgebra::DMatrix;
+use std::borrow::Cow;
 
 /// Arguments for k-means clustering
 #[derive(Debug, Clone)]
@@ -92,18 +93,29 @@ where
     }
 }
 
+/// How [`leiden_clustering_with`] prepares the rows before the kNN graph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeidenInput {
+    /// Row-L2-normalise, so kNN distances on the unit sphere are monotonic
+    /// in cosine: for dot-product / cosine-trained embeddings (bge, gem).
+    Cosine,
+    /// Column z-score: Euclidean kNN on heterogeneous-scale dims (raw SVD).
+    ZScore,
+    /// The rows as given, e.g. PC scores whose scale already carries weight.
+    AsIs,
+}
+
 /// Leiden community detection on a latent representation (rows = points).
 ///
 /// Builds a kNN graph in latent space and runs the modularity-objective
-/// Leiden algorithm. The community count is *not* a parameter — it emerges
-/// from the modularity `resolution` (higher → more, smaller communities),
-/// unless `target_clusters` is set, in which case the resolution is
-/// binary-searched to approximate that count.
+/// Leiden algorithm. The community count is *not* a parameter: it emerges
+/// from the modularity `resolution` (higher means more, smaller
+/// communities), unless `target_clusters` is set, in which case the
+/// resolution is binary-searched to approximate that count.
 ///
-/// `cosine = true` row-L2-normalizes first, so kNN distances on the unit
-/// sphere are monotonic in cosine — the right choice for dot-product /
-/// cosine-trained embeddings (bge, gem). `cosine = false` column z-scores
-/// instead (Euclidean kNN on heterogeneous-scale dims, e.g. raw SVD).
+/// `cosine = true` is [`LeidenInput::Cosine`], `false` is
+/// [`LeidenInput::ZScore`]; [`leiden_clustering_with`] also takes the rows
+/// as they are.
 ///
 /// Returns compacted (contiguous, 0-based) cluster labels, one per row.
 pub fn leiden_clustering(
@@ -114,23 +126,44 @@ pub fn leiden_clustering(
     seed: Option<u64>,
     cosine: bool,
 ) -> anyhow::Result<Vec<usize>> {
+    let input = if cosine {
+        LeidenInput::Cosine
+    } else {
+        LeidenInput::ZScore
+    };
+    leiden_clustering_with(latent, knn, resolution, target_clusters, seed, input)
+}
+
+/// [`leiden_clustering`] with the rows prepared by `input`.
+pub fn leiden_clustering_with(
+    latent: &DMatrix<f32>,
+    knn: usize,
+    resolution: f64,
+    target_clusters: Option<usize>,
+    seed: Option<u64>,
+    input: LeidenInput,
+) -> anyhow::Result<Vec<usize>> {
     let n = latent.nrows();
     let d = latent.ncols();
     if n < 2 {
         anyhow::bail!("Need at least 2 points for Leiden clustering");
     }
-    info!("Leiden: {n} points x {d} features, knn={knn}, seed={seed:?}, cosine={cosine}");
+    info!("Leiden: {n} points x {d} features, knn={knn}, seed={seed:?}, input={input:?}");
 
-    // Metric-dependent preprocessing.
-    let mut latent_pre = latent.clone();
-    if cosine {
-        for mut row in latent_pre.row_iter_mut() {
-            let denom = row.norm().max(1e-8);
-            row /= denom;
-        }
+    let latent_pre = if input == LeidenInput::AsIs {
+        Cow::Borrowed(latent)
     } else {
-        latent_pre.scale_columns_inplace();
-    }
+        let mut x = latent.clone();
+        if input == LeidenInput::Cosine {
+            for mut row in x.row_iter_mut() {
+                let denom = row.norm().max(1e-8);
+                row /= denom;
+            }
+        } else {
+            x.scale_columns_inplace();
+        }
+        Cow::Owned(x)
+    };
 
     let (graph, weights) = KnnGraph::from_rows_fuzzy(
         &latent_pre,
@@ -164,6 +197,45 @@ pub fn leiden_clustering(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two groups apart by 10 along one dim, among 20 noise dims of sd 0.3:
+    /// as is, every kNN edge stays in its group and Leiden at two clusters
+    /// returns the groups (z-scoring would shrink the group dim to ±1
+    /// against noise of sd 1). The bool form gives the same labels as its
+    /// two variants.
+    #[test]
+    fn leiden_as_is_keeps_the_input_scale() {
+        use rand::{rngs::SmallRng, RngExt, SeedableRng};
+        use rand_distr::StandardNormal;
+        let n = 200;
+        let mut rng = SmallRng::seed_from_u64(3);
+        let group: Vec<usize> = (0..n).map(|i| i % 2).collect();
+        let x = DMatrix::from_fn(n, 21, |i, c| {
+            let e: f32 = rng.sample(StandardNormal);
+            if c == 0 {
+                10.0 * group[i] as f32 + 0.1 * e
+            } else {
+                0.3 * e
+            }
+        });
+        let matches = |labels: &[usize]| {
+            let same = (0..n).filter(|&i| labels[i] == labels[0]).count();
+            let agree = (0..n)
+                .filter(|&i| (labels[i] == labels[0]) == (group[i] == group[0]))
+                .count();
+            same == n / 2 && agree == n
+        };
+        let run = |input| leiden_clustering_with(&x, 15, 1.0, Some(2), Some(1), input).unwrap();
+        assert!(matches(&run(LeidenInput::AsIs)), "as is");
+        assert_eq!(
+            run(LeidenInput::ZScore),
+            leiden_clustering(&x, 15, 1.0, Some(2), Some(1), false).unwrap()
+        );
+        assert_eq!(
+            run(LeidenInput::Cosine),
+            leiden_clustering(&x, 15, 1.0, Some(2), Some(1), true).unwrap()
+        );
+    }
 
     #[test]
     fn test_kmeans_columns_single_cluster() {

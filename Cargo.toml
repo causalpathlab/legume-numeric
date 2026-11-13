@@ -1,20 +1,38 @@
 [package]
 name = "legume-numeric"
-version = "0.10.4"
+version = "0.10.5"
 authors = ["Yongjin Park <ypp@stat.ubc.ca>"]
 edition = "2021"
 license = "MIT"
 description = "Numeric and ML foundation for the legume ecosystem (matrix, Leiden, candle, MCMC)"
 repository = "https://github.com/causalpathlab/legume-numeric"
-homepage = "https://github.com/causalpathlab/legume-numeric"
 rust-version = "1.91"
 readme = "README.md"
 include = ["src/**/*", "!**/.claude/**", "!**/.DS_Store", "tests/**/*", "build.rs", "LICENSE", "NOTICE", "README.md", "LEIDEN_README.md"]
 
 [features]
 default = ["matrix", "param", "tensor", "ndarray"]
-matrix = []
-param = ["matrix"]
+# without `matrix` the crate is leiden and fast_math only
+matrix = [
+    "dep:anyhow",
+    "dep:clap",
+    "dep:clustering",
+    "dep:ctrlc",
+    "dep:flate2",
+    "dep:indicatif",
+    "dep:instant-distance",
+    "dep:log",
+    "dep:multiversion",
+    "dep:nalgebra",
+    "dep:nalgebra-sparse",
+    "dep:num-traits",
+    "dep:parquet",
+    "dep:petgraph",
+    "dep:rand_distr",
+    "dep:tempfile",
+    "dep:zip",
+]
+param = ["matrix", "dep:special"]
 # candle `Tensor` support in the matrix code: conversions, tensor IO,
 # sampling and fused ops. Off, candle is not linked at all, for crates that
 # only need matrices (`default-features = false`).
@@ -38,40 +56,37 @@ metal = [
 ]
 
 [dependencies]
-anyhow = "1.0"
-clap = { version = "4.5.20", features = ["derive"] }
-ctrlc = { version = "3", features = ["termination"] }
-flate2 = { version = "1.0.34", default-features = false, features = ["zlib-rs"] }
+anyhow = { version = "1.0", optional = true }
+clap = { version = "4.5.20", features = ["derive"], optional = true }
+ctrlc = { version = "3", features = ["termination"], optional = true }
+flate2 = { version = "1.0.34", default-features = false, features = ["zlib-rs"], optional = true }
 rayon = "1.10.0"
-tempfile = "3.2"
+tempfile = { version = "3.2", optional = true }
 
 rand = "0.10.1"
-rand_distr = "0.6"
+rand_distr = { version = "0.6", optional = true }
 
-nalgebra = "0.34"
-nalgebra-sparse = "0.11"
-num-traits = "0.2.19"
-
-approx = "0.5.1"
-serde = { version = "1.0", features = ["derive"] }
+nalgebra = { version = "0.34", optional = true }
+nalgebra-sparse = { version = "0.11", optional = true }
+num-traits = { version = "0.2.19", optional = true }
 
 ndarray = { version = "0.17", features = ["rayon", "serde", "approx", "blas"], optional = true }
 
-instant-distance = "0.6"
-multiversion = "0.8"
-indicatif = { version = "^0.18", features = ["rayon"] }
+instant-distance = { version = "0.6", optional = true }
+multiversion = { version = "0.8", optional = true }
+indicatif = { version = "^0.18", features = ["rayon"], optional = true }
 # Only the low-level file/record API is used, never `parquet::arrow`, so the
 # arrow stack stays out. Every codec stays readable: files from other tools
 # (snappy from pyarrow, zstd from polars) must still open.
-parquet = { version = "59", default-features = false, features = ["snap", "brotli", "flate2-zlib-rs", "lz4", "zstd", "simdutf8"] }
+parquet = { version = "59", default-features = false, features = ["snap", "brotli", "flate2-zlib-rs", "lz4", "zstd", "simdutf8"], optional = true }
 rustc-hash = "2.1"
-log = "0.4"
+log = { version = "0.4", optional = true }
 # Zarr stores are zipped `Stored`; deflate and zstd cover other archivers.
 # bzip2, lzma, xz, ppmd, deflate64 and AES (refused anyway) are left out.
-zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs", "zstd"] }
-clustering = { version = "0.2", features = ["parallel"] }
-petgraph = "0.8"
-special = "0.13"
+zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs", "zstd"], optional = true }
+clustering = { version = "0.2", features = ["parallel"], optional = true }
+petgraph = { version = "0.8", optional = true }
+special = { version = "0.13", optional = true }
 
 [dependencies.candle-core]
 version = "0.10"
@@ -94,7 +109,22 @@ default-features = false
 optional = true
 
 [dev-dependencies]
+approx = "0.5.1"
+# the fast_math tests compare against it in every build
+special = "0.13"
 # AES only to write the encrypted archive that `unzip` must refuse.
 zip = { version = "9.0.4", default-features = false, features = ["aes-crypto", "deflate-flate2-zlib-rs", "zstd"] }
 insta = "1"
 mimalloc = "0.1"
+
+[[test]]
+name = "io_tests"
+required-features = ["matrix"]
+
+[[test]]
+name = "norm_tests"
+required-features = ["matrix"]
+
+[[test]]
+name = "rsvd_tests"
+required-features = ["matrix"]

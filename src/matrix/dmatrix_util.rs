@@ -1,4 +1,4 @@
-use nalgebra::{ComplexField, DMatrix, Matrix};
+use nalgebra::{ComplexField, DMatrix, DVectorViewMut, Matrix};
 use nalgebra_sparse::{coo::CooMatrix, csc::CscMatrix, csr::CsrMatrix};
 
 use crate::matrix::rand_util::{collect_seeded, entropy_seed};
@@ -621,6 +621,34 @@ where
     }
 }
 
+/// `f` on each column of `x`, the columns in parallel.
+fn dense_columns_par<T, F>(x: &mut DMatrix<T>, f: F)
+where
+    T: nalgebra::Scalar + Send,
+    F: Fn(DVectorViewMut<T>) + Sync,
+{
+    let nrows = x.nrows();
+    if nrows > 0 {
+        x.as_mut_slice()
+            .par_chunks_mut(nrows)
+            .for_each(|col| f(DVectorViewMut::from_slice(col, nrows)));
+    }
+}
+
+/// Each column's stored values of `x` as its own mutable slice, so the
+/// columns can be worked on in parallel.
+fn csc_columns_mut<T>(x: &mut CscMatrix<T>) -> Vec<&mut [T]> {
+    let (offsets, _, mut rest) = x.csc_data_mut();
+    offsets
+        .windows(2)
+        .map(|w| {
+            let (col, tail) = std::mem::take(&mut rest).split_at_mut(w[1] - w[0]);
+            rest = tail;
+            col
+        })
+        .collect()
+}
+
 impl<T> MatElemOps for CscMatrix<T>
 where
     T: nalgebra::RealField + Copy,
@@ -629,9 +657,9 @@ where
     type Scalar = T;
 
     fn log1p_inplace(&mut self) {
-        for x in self.values_mut() {
-            *x = (*x).ln_1p();
-        }
+        self.values_mut()
+            .par_iter_mut()
+            .for_each(|x| *x = (*x).ln_1p());
     }
 
     fn log1p(&self) -> Self::Mat {
@@ -713,23 +741,12 @@ where
     }
 
     fn sum_to_one_columns_inplace(&mut self) {
-        let ncol = self.ncols();
-
-        for j in 0..ncol {
-            if let Some(x_j) = self.get_col(j) {
-                let mut denom = T::zero();
-                for &x_ij in x_j.values() {
-                    denom += x_ij;
-                }
-                if let Some(mut x_j) = self.get_col_mut(j) {
-                    if denom > T::zero() {
-                        for x_ij in x_j.values_mut() {
-                            *x_ij /= denom;
-                        }
-                    }
-                }
+        csc_columns_mut(self).into_par_iter().for_each(|x_j| {
+            let denom = x_j.iter().fold(T::zero(), |a, &x_ij| a + x_ij);
+            if denom > T::zero() {
+                x_j.iter_mut().for_each(|x_ij| *x_ij /= denom);
             }
-        }
+        });
     }
 
     fn sum_to_one_columns(&self) -> Self::Mat {
@@ -973,10 +990,11 @@ where
     }
 
     fn normalize_columns_inplace(&mut self) {
-        for mut xx_j in self.column_iter_mut() {
-            let denom = xx_j.norm().max(T::from_f64(1e-8).unwrap());
+        let floor = T::from_f64(1e-8).unwrap();
+        dense_columns_par(self, |mut xx_j| {
+            let denom = xx_j.norm().max(floor.clone());
             xx_j /= denom;
-        }
+        });
     }
 
     fn normalize_columns(&self) -> Self::Mat {
@@ -986,14 +1004,14 @@ where
     }
 
     fn scale_columns_inplace(&mut self) {
-        for mut xx_j in self.column_iter_mut() {
+        dense_columns_par(self, |mut xx_j| {
             let mu = xx_j.mean();
             let sig = xx_j.variance().sqrt();
             xx_j.add_scalar_mut(-mu);
             if sig > T::zero() {
                 xx_j /= sig;
             }
-        }
+        });
     }
 
     fn scale_rows_inplace(&mut self) {
@@ -1294,5 +1312,82 @@ where
             .expect("to f32")
             .to_vec1::<f32>()
             .expect("to vec")
+    }
+}
+
+#[cfg(test)]
+mod par_tests {
+    use super::*;
+    use rand::{rngs::SmallRng, RngExt, SeedableRng};
+
+    /// A sparse matrix with empty columns and an all-zero-valued column.
+    fn sparse(seed: u64) -> CscMatrix<f32> {
+        let (nr, nc) = (37, 23);
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let mut coo = CooMatrix::new(nr, nc);
+        for j in 0..nc {
+            if j % 5 == 3 {
+                continue;
+            }
+            for i in 0..nr {
+                if rng.random::<f32>() < 0.3 {
+                    let v = if j == 7 {
+                        0.0
+                    } else {
+                        rng.random::<f32>() * 9.0
+                    };
+                    coo.push(i, j, v);
+                }
+            }
+        }
+        CscMatrix::from(&coo)
+    }
+
+    #[test]
+    fn csc_log1p_and_sum_to_one_match_the_serial_loops() {
+        let x = sparse(1);
+        let mut want = x.clone();
+        for v in want.values_mut() {
+            *v = v.ln_1p();
+        }
+        assert_eq!(x.log1p().values(), want.values());
+
+        let mut want = x.clone();
+        for j in 0..want.ncols() {
+            let mut col = want.get_col_mut(j).unwrap();
+            let denom: f32 = col.values().iter().fold(0.0, |a, &v| a + v);
+            if denom > 0.0 {
+                col.values_mut().iter_mut().for_each(|v| *v /= denom);
+            }
+        }
+        let got = x.sum_to_one_columns();
+        assert_eq!(got.col_offsets(), want.col_offsets());
+        assert_eq!(got.row_indices(), want.row_indices());
+        assert_eq!(got.values(), want.values());
+    }
+
+    #[test]
+    fn dense_scale_and_normalize_columns_match_the_serial_loops() {
+        let mut rng = SmallRng::seed_from_u64(2);
+        let mut x = DMatrix::<f32>::from_fn(31, 9, |_, _| rng.random::<f32>() * 5.0);
+        x.column_mut(4).fill(2.5);
+        let mut want = x.clone();
+        for mut col in want.column_iter_mut() {
+            let mu = col.mean();
+            let sig = col.variance().sqrt();
+            col.add_scalar_mut(-mu);
+            if sig > 0.0 {
+                col /= sig;
+            }
+        }
+        assert_eq!(x.scale_columns(), want);
+
+        let mut want = x.clone();
+        for mut col in want.column_iter_mut() {
+            let denom = col.norm().max(1e-8);
+            col /= denom;
+        }
+        assert_eq!(x.normalize_columns(), want);
+        assert_eq!(DMatrix::<f32>::zeros(0, 3).scale_columns().shape(), (0, 3));
     }
 }

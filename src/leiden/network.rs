@@ -233,9 +233,8 @@ impl Network {
             cluster_g.add_node(0.0);
         }
 
-        for n in 0..self.nodes() {
-            let cluster = clustering.get(n);
-            cluster_g.node_weights[cluster] += self.node_weights[n];
+        for (n, &w) in self.node_weights.iter().enumerate() {
+            cluster_g.node_weights[clustering.get(n)] += w;
         }
 
         let mut edge_memo: HashMap<(u32, u32), f32> = HashMap::default();
@@ -270,12 +269,11 @@ impl Network {
         let mut new_id_map = Vec::with_capacity(c.nodes());
         let mut counts = vec![0usize; c.num_clusters()];
 
-        for i in 0..self.nodes() {
+        for (i, &w) in self.node_weights.iter().enumerate() {
             let cluster = c.get(i);
-            let new_id = counts[cluster];
-            new_id_map.push(new_id);
+            new_id_map.push(counts[cluster]);
             counts[cluster] += 1;
-            graphs[cluster].add_node(self.node_weights[i]);
+            graphs[cluster].add_node(w);
         }
 
         for (n1, n2, w) in self.edge_references() {

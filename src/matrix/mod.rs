@@ -12,6 +12,7 @@ pub mod dmatrix_top_eigen;
 pub mod dmatrix_util;
 pub mod embedding_geometry;
 pub mod graph;
+pub mod harmony;
 pub mod hypothesis;
 pub mod kmeans;
 pub mod knn;

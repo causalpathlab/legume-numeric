@@ -28,7 +28,7 @@ fn wide<T: Float>(v: T) -> f64 {
 
 /// An f64 result, narrowed back to the caller's element type.
 #[inline]
-fn narrow<T: Float>(v: f64) -> T {
+pub(crate) fn narrow<T: Float>(v: f64) -> T {
     T::from(v).unwrap_or_else(T::nan)
 }
 
@@ -46,7 +46,7 @@ fn mean_of<U: Float>(s1: &[f64], n: f64) -> Vec<U> {
 }
 
 #[inline]
-fn variance_at(s1: f64, s2: f64, n: f64) -> f64 {
+pub(crate) fn variance_at(s1: f64, s2: f64, n: f64) -> f64 {
     let mu = s1 / n;
     (s2 / n - mu * mu).max(0.0)
 }

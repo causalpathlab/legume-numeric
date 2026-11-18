@@ -2,17 +2,20 @@
 //! fuzzy kNN graph is coarsened into pseudobulks (PBs) by heavy-edge
 //! matching ([`crate::matrix::coarsen`]), the graph collapsed onto the PBs,
 //! any `*_on_graph` layout run on that PB graph, and every column placed
-//! from its nearest PBs by [`project_cells_nystrom`].
+//! from the PBs near it in that graph ([`Coarsened::place_cells`]).
 //!
 //! ```ignore
 //! let pbs = coarsened(&table_kn, &CoarsenArgs::default())?;
 //! let pb_coords = stress_layout_2d_on_graph(pbs.n_pb(), &pbs.pb_edges, 42);
-//! let cell_coords = pbs.place_cells(&table_kn, &pb_coords, 15, 10.0);
+//! let cell_coords = pbs.place_cells(&table_kn, &pb_coords, 3, 10.0);
 //! ```
 
-use super::{project_cells_nystrom, Mat};
+#[cfg(doc)]
+use super::project_cells_nystrom;
+use super::Mat;
 use crate::matrix::coarsen::{coarsen, collapse};
 use crate::matrix::knn_graph::{KnnGraph, KnnGraphArgs};
+use rayon::prelude::*;
 
 type Edges = Vec<(usize, usize, f32)>;
 
@@ -126,12 +129,77 @@ impl Coarsened {
     }
 
     /// Every column of `table_kn` placed on the PB layout `pb_coords`
-    /// (`n_pb × 2`) by [`project_cells_nystrom`] from its `knn` nearest
-    /// PBs, kernel exponent `alpha`. Returns `n × 2`.
+    /// (`n_pb × 2`) at the alpha-decay-kernel mean of PBs near it, as
+    /// [`project_cells_nystrom`] weighs them: `σ` is the distance to the
+    /// `knn`-th nearest candidate PB and `alpha` the kernel exponent.
+    ///
+    /// A column's candidates are its own PB and that PB's neighbours in
+    /// `pb_edges`, so it never lands between PBs the graph keeps apart
+    /// (averaging two distant groups puts a cell in the empty space
+    /// between them, a streak across the layout). A column in no PB has
+    /// every PB as a candidate. Returns `n × 2`.
     #[must_use]
     pub fn place_cells(&self, table_kn: &Mat, pb_coords: &Mat, knn: usize, alpha: f32) -> Mat {
-        project_cells_nystrom(table_kn, &self.pb_features, pb_coords, knn, alpha)
+        let n_pb = self.n_pb();
+        let mut near: Vec<Vec<usize>> = (0..n_pb).map(|g| vec![g]).collect();
+        for &(a, b, _) in &self.pb_edges {
+            near[a].push(b);
+            near[b].push(a);
+        }
+        let every: Vec<usize> = (0..n_pb).collect();
+        let placed: Vec<(f32, f32)> = (0..table_kn.ncols())
+            .into_par_iter()
+            .map(|c| {
+                let pbs = match self.membership.get(c) {
+                    Some(&g) if g < n_pb => &near[g],
+                    _ => &every,
+                };
+                let cell = table_kn.column(c);
+                let dist: Vec<f32> = pbs
+                    .iter()
+                    .map(|&g| (cell - self.pb_features.column(g)).norm())
+                    .collect();
+                let w = alpha_decay(&dist, knn, alpha);
+                pbs.iter().zip(&w).fold((0.0, 0.0), |(x, y), (&g, &w)| {
+                    (x + w * pb_coords[(g, 0)], y + w * pb_coords[(g, 1)])
+                })
+            })
+            .collect();
+        let mut coords = Mat::zeros(placed.len(), 2);
+        for (c, (x, y)) in placed.into_iter().enumerate() {
+            coords[(c, 0)] = x;
+            coords[(c, 1)] = y;
+        }
+        coords
     }
+}
+
+/// Weights summing to 1 from distances `dist`: `exp(-(d/σ)^alpha)` with
+/// `σ` the `knn`-th smallest distance; all on the nearest when every
+/// weight underflows.
+fn alpha_decay(dist: &[f32], knn: usize, alpha: f32) -> Vec<f32> {
+    if dist.is_empty() {
+        return Vec::new();
+    }
+    let kth = knn.clamp(1, dist.len()) - 1;
+    let mut sorted = dist.to_vec();
+    sorted.select_nth_unstable_by(kth, f32::total_cmp);
+    let sigma = sorted[kth].max(1e-6);
+    let mut w: Vec<f32> = dist
+        .iter()
+        .map(|&d| (-(d / sigma).powf(alpha)).exp())
+        .collect();
+    let sum: f32 = w.iter().sum();
+    if sum > 1e-12 {
+        w.iter_mut().for_each(|v| *v /= sum);
+    } else {
+        let nearest = (0..dist.len())
+            .min_by(|&a, &b| dist[a].total_cmp(&dist[b]))
+            .unwrap_or(0);
+        w.fill(0.0);
+        w[nearest] = 1.0;
+    }
+    w
 }
 
 #[cfg(test)]
@@ -199,5 +267,22 @@ mod tests {
             &pbs,
             &umap_layout_2d_on_graph(pbs.n_pb(), &pbs.pb_edges, &Umap::default()),
         );
+    }
+
+    #[test]
+    fn a_cell_is_not_placed_between_unlinked_pbs() {
+        // Two PBs with no edge between them; cell 4 sits halfway in
+        // feature space but belongs to PB 0.
+        let table = Mat::from_row_slice(1, 5, &[0.0, 0.1, 1.0, 1.1, 0.55]);
+        let edges = [(0, 1, 1.0), (2, 3, 1.0), (0, 4, 1.0)];
+        let pbs = Coarsened::from_membership(&table, &edges, vec![0, 0, 1, 1, 0]);
+        assert!(pbs.pb_edges.is_empty());
+        let pb_coords = Mat::from_row_slice(2, 2, &[0.0, 0.0, 10.0, 0.0]);
+        let cells = pbs.place_cells(&table, &pb_coords, 2, 10.0);
+        assert!(cells[(4, 0)].abs() < 1e-4, "{}", cells[(4, 0)]);
+        assert!((cells[(2, 0)] - 10.0).abs() < 1e-4);
+        let unplaced = Coarsened::from_membership(&table, &edges, vec![0, 0, 1, 1, usize::MAX]);
+        let between = unplaced.place_cells(&table, &pb_coords, 2, 10.0)[(4, 0)];
+        assert!(between > 1.0 && between < 9.0, "{between}");
     }
 }

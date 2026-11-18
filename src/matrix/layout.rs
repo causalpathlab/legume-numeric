@@ -22,6 +22,13 @@
 //!   level from a root.
 //! - [`lle_layout_2d_on_graph`]: modified locally linear embedding of
 //!   features, neighbours taken from the graph.
+//! - [`umap_layout_2d_on_graph`]: UMAP SGD from a random start.
+//! - `tsne_layout_2d_on_graph` (feature `tensor`): t-SNE of the graph's
+//!   affinities on candle, optionally density-preserving (densMAP).
+//!
+//! [`coarsened`] coarsens a table's kNN graph into pseudobulks for any of
+//! these to lay out, and [`Coarsened::place_cells`] places every cell on
+//! the result by Nyström.
 //!
 //! With no I/O and no CLI dependencies, they can be consumed by `senna`
 //! (PB-landmark layout), `senna annotate-gem` (cell layout off the leiden
@@ -37,6 +44,7 @@ use rayon::prelude::*;
 
 type Mat = DMatrix<f32>;
 
+mod coarsened;
 mod diffusion;
 mod forceatlas2;
 mod graph_prep;
@@ -44,12 +52,31 @@ mod lle;
 mod radial;
 mod stress;
 mod sugiyama;
+#[cfg(feature = "tensor")]
+mod tsne;
+pub use coarsened::{coarsened, fuzzy_graph_of_columns, CoarsenArgs, Coarsened};
 pub use diffusion::diffusion_map_2d_on_graph;
 pub use forceatlas2::forceatlas2_layout_2d_on_graph;
 pub use lle::lle_layout_2d_on_graph;
 pub use radial::radial_tree_layout_2d_on_graph;
 pub use stress::stress_layout_2d_on_graph;
 pub use sugiyama::sugiyama_layout_2d_on_graph;
+#[cfg(feature = "tensor")]
+pub use tsne::{tsne_layout_2d_on_graph, TSne, TsneArgs};
+
+/// [`crate::matrix::umap::Umap`] SGD of the `n` nodes of the undirected
+/// graph `edges` (`(i, j, weight)`, weights affinities), from a
+/// [`crate::matrix::pca::random_init_2d`] start seeded by `umap.seed`.
+/// Returns `n × 2`.
+#[must_use]
+pub fn umap_layout_2d_on_graph(
+    n: usize,
+    edges: &[(usize, usize, f32)],
+    umap: &crate::matrix::umap::Umap,
+) -> Mat {
+    let init = crate::matrix::pca::random_init_2d(n, umap.seed);
+    Mat::from_row_slice(n, 2, &umap.fit(edges, n, &init))
+}
 
 ///////////
 // PHATE //

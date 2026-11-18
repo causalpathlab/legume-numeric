@@ -24,7 +24,7 @@
 //!   features, neighbours taken from the graph.
 //! - [`umap_layout_2d_on_graph`]: UMAP SGD from a random start.
 //! - `tsne_layout_2d_on_graph` (feature `tensor`): t-SNE of the graph's
-//!   affinities on candle, optionally density-preserving (densMAP).
+//!   affinities, by the exact gradient, optionally density-preserving (densMAP).
 //!
 //! [`coarsened`] coarsens a table's kNN graph into pseudobulks for any of
 //! these to lay out, and [`Coarsened::place_cells`] places every cell on

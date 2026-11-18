@@ -1,8 +1,12 @@
-//! t-SNE of a weighted graph on candle: [`TSne`] and
-//! [`tsne_layout_2d_on_graph`].
+//! t-SNE of a weighted graph: [`TSne`] and [`tsne_layout_2d_on_graph`].
+//!
+//! The gradient is the exact one, written out (van der Maaten & Hinton
+//! 2008, eq. 5, plus the densMAP term's), over every pair: O(n²) per
+//! iteration in parallel, meant for the PB graphs a layout coarsens to.
 
 use super::Mat;
-use candle_core::{DType, Device, Result, Tensor, Var, D};
+use candle_core::Result;
+use rayon::prelude::*;
 
 /// Smallest adaptive gain.
 const MIN_GAIN: f32 = 0.01;
@@ -55,7 +59,6 @@ pub fn tsne_layout_2d_on_graph(
 /// (Jacobs 1988), momentum switching, strong early exaggeration, and init
 /// rescaling to std = 1e-4, on a graph's affinities. Also supports a
 /// densMAP-style density-preservation auxiliary loss.
-/// Built on candle for automatic differentiation.
 ///
 /// References:
 /// - van der Maaten & Hinton, *JMLR* 2008 — t-SNE.
@@ -138,50 +141,35 @@ impl TSne {
         edges: &[(usize, usize, f32)],
         init: &[f32],
     ) -> Result<Vec<f32>> {
-        let device = Device::Cpu;
+        let p = joint_probabilities(n, edges);
+        let p_sum: f32 = p.iter().sum();
 
-        let p_tensor = Tensor::from_vec(joint_probabilities(n, edges), (n, n), &device)?;
-
-        // Pre-build the centered log-target tensor for density preservation:
+        // The centered log-target of density preservation:
         //   target_i ∝ 1/√w_i   =>   log target_i = -½ log w_i
-        let density_target = if self.density_lambda > 0.0 {
-            self.weights.as_ref().and_then(|w| {
-                if w.len() != n {
-                    return None;
-                }
+        let density_target: Option<Vec<f32>> = if self.density_lambda > 0.0 {
+            self.weights.as_ref().filter(|w| w.len() == n).map(|w| {
                 let mut log_t: Vec<f32> = w.iter().map(|&wi| -0.5 * wi.max(1.0).ln()).collect();
                 let mean = log_t.iter().sum::<f32>() / n as f32;
                 for v in &mut log_t {
                     *v -= mean;
                 }
-                Tensor::from_vec(log_t, (n,), &device).ok()
+                log_t
             })
         } else {
             None
         };
 
-        let mut y_flat: Vec<f32> = init.to_vec();
+        let mut y: Vec<f32> = init.to_vec();
 
         // Rescale the init to std = 1e-4 (Rtsne / openTSNE convention).
         // Keeps the *shape* of the init while shrinking the scale so that
         // early exaggeration has room to push clusters apart.
-        {
-            let mean_x: f32 = (0..n).map(|i| y_flat[i * 2]).sum::<f32>() / n as f32;
-            let mean_y: f32 = (0..n).map(|i| y_flat[i * 2 + 1]).sum::<f32>() / n as f32;
-            for i in 0..n {
-                y_flat[i * 2] -= mean_x;
-                y_flat[i * 2 + 1] -= mean_y;
-            }
-            let var: f32 =
-                y_flat.iter().map(|v| v * v).sum::<f32>() / (y_flat.len() as f32).max(1.0);
-            let std = var.sqrt().max(1e-12);
-            let scale = 1e-4 / std;
-            for v in &mut y_flat {
-                *v *= scale;
-            }
+        center(&mut y);
+        let var: f32 = y.iter().map(|v| v * v).sum::<f32>() / (y.len() as f32).max(1.0);
+        let scale = 1e-4 / var.sqrt().max(1e-12);
+        for v in &mut y {
+            *v *= scale;
         }
-
-        let y = Var::from_tensor(&Tensor::from_vec(y_flat, (n, 2), &device)?)?;
 
         // Auto-scale learning rate with n (Kobak & Berens 2019). The fixed
         // lr=200 Rtsne convention diverges for small n: early-exaggeration
@@ -195,140 +183,139 @@ impl TSne {
         let mut gains: Vec<f32> = vec![1.0; n * 2];
 
         for iter in 0..self.n_iter {
-            let p_mult = if iter < self.early_exaggeration_iter {
-                self.early_exaggeration
-            } else {
-                1.0
-            };
-            let p_scaled = (&p_tensor * f64::from(p_mult))?;
-
-            // KL(+ density). Density term disabled during early exaggeration
-            // so gradients through log R don't blow up at tiny distances.
-            let kl = kl_divergence(&y, &p_scaled, n)?;
-            let loss = if iter >= self.early_exaggeration_iter {
-                if let Some(log_target) = &density_target {
-                    let dens = density_loss(&y, &p_tensor, log_target, n)?;
-                    (&kl + (dens * f64::from(self.density_lambda))?)?
-                } else {
-                    kl
-                }
-            } else {
-                kl
-            };
-
-            let grad = loss.backward()?;
-            let y_grad = grad
-                .get(&y)
-                .ok_or_else(|| candle_core::Error::Msg("t-SNE: no gradient for Y".into()))?;
-            let g_flat: Vec<f32> = y_grad.flatten_all()?.to_vec1::<f32>()?;
+            let early = iter < self.early_exaggeration_iter;
+            let p_mult = if early { self.early_exaggeration } else { 1.0 };
+            // Density term disabled during early exaggeration so gradients
+            // through log R don't blow up at tiny distances.
+            let density = density_target
+                .as_deref()
+                .filter(|_| !early)
+                .map(|t| (t, self.density_lambda));
+            let g = gradient(&y, &p, p_mult, p_sum, density);
 
             // Adaptive gains (van der Maaten reference):
             //   sign(grad) ≠ sign(velocity) (oscillating) → gain += 0.2
             //   sign(grad) == sign(velocity) (steady)      → gain *= 0.8
-            for i in 0..gains.len() {
-                if (velocity[i] > 0.0) == (g_flat[i] > 0.0) {
-                    gains[i] *= 0.8;
+            for (gain, (&v, &gi)) in gains.iter_mut().zip(velocity.iter().zip(&g)) {
+                if (v > 0.0) == (gi > 0.0) {
+                    *gain *= 0.8;
                 } else {
-                    gains[i] += 0.2;
+                    *gain += 0.2;
                 }
-                if gains[i] < MIN_GAIN {
-                    gains[i] = MIN_GAIN;
-                }
+                *gain = gain.max(MIN_GAIN);
             }
 
             // Momentum switch at the end of early exaggeration.
-            let momentum = if iter < self.early_exaggeration_iter {
+            let momentum = if early {
                 self.initial_momentum
             } else {
                 self.final_momentum
             };
 
-            // v ← momentum · v − lr · gains · grad
+            // v ← momentum · v − lr · gains · grad; Y ← Y + v, centered so
+            // the mean stays at the origin.
             for i in 0..velocity.len() {
-                velocity[i] = momentum * velocity[i] - learning_rate * gains[i] * g_flat[i];
+                velocity[i] = momentum * velocity[i] - learning_rate * gains[i] * g[i];
+                y[i] += velocity[i];
             }
-
-            // Y ← Y + v, then center so the mean is at the origin.
-            let y_vec: Vec<f32> = y.as_tensor().flatten_all()?.to_vec1::<f32>()?;
-            let mut y_new: Vec<f32> = y_vec
-                .iter()
-                .zip(velocity.iter())
-                .map(|(yv, vv)| yv + vv)
-                .collect();
-            let mean_x: f32 = (0..n).map(|i| y_new[i * 2]).sum::<f32>() / n as f32;
-            let mean_y: f32 = (0..n).map(|i| y_new[i * 2 + 1]).sum::<f32>() / n as f32;
-            for i in 0..n {
-                y_new[i * 2] -= mean_x;
-                y_new[i * 2 + 1] -= mean_y;
-            }
-            y.set(&Tensor::from_vec(y_new, (n, 2), &device)?)?;
+            center(&mut y);
         }
 
-        let result = y.as_tensor().flatten_all()?.to_vec1::<f32>()?;
-        Ok(result)
+        Ok(y)
     }
 }
 
-/// Compute KL divergence between P and Q (Student-t in low-dim)
-fn kl_divergence(y: &Var, p: &Tensor, n: usize) -> Result<Tensor> {
-    // Compute pairwise squared distances in low-dim
-    // ||y_i - y_j||^2 = ||y_i||^2 + ||y_j||^2 - 2 * y_i · y_j
-    let y_sq = y.as_tensor().sqr()?.sum(D::Minus1)?; // (n,)
-    let y_sq_row = y_sq.reshape((n, 1))?; // (n, 1)
-    let y_sq_col = y_sq.reshape((1, n))?; // (1, n)
-    let dot = y.as_tensor().matmul(&y.as_tensor().t()?)?; // (n, n)
-    let dist_sq = (y_sq_row.broadcast_add(&y_sq_col)? - (&dot * 2.0)?)?;
-
-    // Student-t: q_ij = (1 + ||y_i - y_j||^2)^-1
-    let q_unnorm = (&dist_sq + 1.0)?.recip()?;
-
-    // Zero out diagonal
-    let mask = Tensor::eye(n, DType::F32, y.as_tensor().device())?;
-    let q_unnorm = (&q_unnorm * (1.0 - &mask)?)?;
-
-    // Normalize
-    let q_sum = q_unnorm.sum_all()?;
-    let q = q_unnorm.broadcast_div(&q_sum)?.clamp(1e-12, 1.0)?;
-
-    // KL divergence: sum(P * log(P/Q))
-    let log_pq = p.broadcast_div(&q)?.log()?;
-    let kl = (p * log_pq)?.sum_all()?;
-
-    Ok(kl)
+/// Move the points of `y` (flat `n × 2`) so their mean is the origin.
+fn center(y: &mut [f32]) {
+    let n = y.len() / 2;
+    let (sx, sy) = (0..n).fold((0.0, 0.0), |(a, b), i| (a + y[2 * i], b + y[2 * i + 1]));
+    let (mx, my) = (sx / n.max(1) as f32, sy / n.max(1) as f32);
+    for i in 0..n {
+        y[2 * i] -= mx;
+        y[2 * i + 1] -= my;
+    }
 }
 
-/// densMAP-style density-preservation loss (Narayan, Berger & Cho,
-/// *Nat Biotechnol* 2021). For each point i, compute a soft local radius
-/// in 2D as a P-weighted mean distance,
-///     `R_i` = `Σ_j` `P_ij` · `d_ij(Y)`,
-/// and penalize the centered log-radius against a centered target
-/// `log_target_i = -½ log(w_i)` (i.e. target radius ∝ `1/√w_i`, so dense
-/// high-D regions stay dense in 2D). Both sides are mean-centered, so no
-/// absolute scale offset needs to be fit.
-fn density_loss(y: &Var, p: &Tensor, log_target_centered: &Tensor, n: usize) -> Result<Tensor> {
-    // Pairwise Euclidean distances in 2D.
-    let y_sq = y.as_tensor().sqr()?.sum(D::Minus1)?;
-    let y_sq_row = y_sq.reshape((n, 1))?;
-    let y_sq_col = y_sq.reshape((1, n))?;
-    let dot = y.as_tensor().matmul(&y.as_tensor().t()?)?;
-    let dist_sq = (y_sq_row.broadcast_add(&y_sq_col)? - (&dot * 2.0)?)?;
-    let dist = dist_sq.clamp(1e-12f32, f32::INFINITY)?.sqrt()?;
+/// The exact gradient (flat `n × 2`) at `y` of `KL(p_mult · P ‖ Q)`, `Q`
+/// the Student-t affinities of `y`, plus `lambda ×` the densMAP loss when
+/// `density` is `Some((centered log-target, lambda))`.
+///
+/// - KL: `4 Σ_j (p_mult·P_ij − S·q_ij) w_ij (y_i − y_j)`, with
+///   `w_ij = 1/(1 + d_ij²)`, `q_ij = w_ij / Σ w` and `S = p_mult · Σ P`.
+/// - densMAP: `L = mean_i (c_i − t_i)²` with `c` the centered `log R`,
+///   `R_i = max(Σ_j P_ij d_ij, 1e-3)`; its gradient is
+///   `Σ_j (g_i + g_j) P_ij (y_i − y_j) / d_ij` with `g_k = 2(c_k − t_k) / (n R_k)`
+///   (0 where `R` is floored).
+fn gradient(
+    y: &[f32],
+    p: &[f32],
+    p_mult: f32,
+    p_sum: f32,
+    density: Option<(&[f32], f32)>,
+) -> Vec<f32> {
+    let n = y.len() / 2;
+    let pair = |i: usize, j: usize| {
+        let (dx, dy) = (y[2 * i] - y[2 * j], y[2 * i + 1] - y[2 * j + 1]);
+        (dx, dy, dx * dx + dy * dy)
+    };
 
-    // R_i = Σ_j P_ij · d_ij, row-wise weighted sum of 2D distances.
-    // Floor with 1e-3 so the gradient of log R stays bounded when the
-    // layout is still collapsed near the origin.
-    let r = (p * &dist)?.sum(D::Minus1)?;
-    let log_r = r.clamp(1e-3f32, f32::INFINITY)?.log()?;
+    // Σ_ij w_ij, and each point's R_i when density is on.
+    let rows: Vec<(f64, f32)> = (0..n)
+        .into_par_iter()
+        .map(|i| {
+            let (mut z, mut r) = (0.0_f64, 0.0_f32);
+            for j in (0..n).filter(|&j| j != i) {
+                let (_, _, d2) = pair(i, j);
+                z += f64::from(1.0 / (1.0 + d2));
+                if density.is_some() {
+                    r += p[i * n + j] * d2.max(1e-12).sqrt();
+                }
+            }
+            (z, r)
+        })
+        .collect();
+    let z = rows.iter().map(|&(z, _)| z).sum::<f64>() as f32;
+    let s = p_mult * p_sum;
 
-    // Center log R so only the pattern (not the absolute scale) is fit.
-    let mean_log_r = log_r.mean_all()?;
-    let log_r_centered = log_r.broadcast_sub(&mean_log_r)?;
+    // g_k of the density term.
+    let g_density: Option<Vec<f32>> = density.map(|(target, lambda)| {
+        let log_r: Vec<f32> = rows.iter().map(|&(_, r)| r.max(1e-3).ln()).collect();
+        let mean = log_r.iter().sum::<f32>() / n as f32;
+        rows.iter()
+            .zip(&log_r)
+            .zip(target)
+            .map(|((&(_, r), &lr), &t)| {
+                if r > 1e-3 {
+                    lambda * 2.0 * (lr - mean - t) / (n as f32 * r)
+                } else {
+                    0.0
+                }
+            })
+            .collect()
+    });
 
-    // Loss = mean squared deviation between centered low-D log-radii
-    // and centered target.
-    let diff = (&log_r_centered - log_target_centered)?;
-    let loss = diff.sqr()?.mean_all()?;
-    Ok(loss)
+    let mut grad = vec![0.0_f32; 2 * n];
+    grad.par_chunks_exact_mut(2)
+        .enumerate()
+        .for_each(|(i, gi)| {
+            let (mut gx, mut gy) = (0.0_f32, 0.0_f32);
+            for j in (0..n).filter(|&j| j != i) {
+                let (dx, dy, d2) = pair(i, j);
+                let w = 1.0 / (1.0 + d2);
+                let pij = p[i * n + j];
+                let mut f = 4.0 * (p_mult * pij - s * w / z) * w;
+                if let Some(gd) = &g_density {
+                    if d2 > 1e-12 {
+                        f += (gd[i] + gd[j]) * pij / d2.sqrt();
+                    }
+                }
+                gx += f * dx;
+                gy += f * dy;
+            }
+            gi[0] = gx;
+            gi[1] = gy;
+        });
+    grad
 }
 
 /// The joint `P` (row-major `n × n`) of the graph `edges`:
@@ -402,6 +389,87 @@ mod tests {
                 assert!(
                     apart > 2.0 * spread,
                     "groups {a}, {b}: {apart} apart, spread {spread}"
+                );
+            }
+        }
+    }
+
+    /// The candle losses the gradient was written from, for autograd.
+    mod reference {
+        use candle_core::{DType, Result, Tensor, Var, D};
+
+        fn dist_sq(y: &Var, n: usize) -> Result<Tensor> {
+            let y_sq = y.as_tensor().sqr()?.sum(D::Minus1)?;
+            let dot = y.as_tensor().matmul(&y.as_tensor().t()?)?;
+            y_sq.reshape((n, 1))?
+                .broadcast_add(&y_sq.reshape((1, n))?)?
+                - (&dot * 2.0)?
+        }
+
+        pub fn kl(y: &Var, p: &Tensor, n: usize) -> Result<Tensor> {
+            let q = (dist_sq(y, n)? + 1.0)?.recip()?;
+            let mask = Tensor::eye(n, DType::F32, y.as_tensor().device())?;
+            let q = (&q * (1.0 - &mask)?)?;
+            let q = q.broadcast_div(&q.sum_all()?)?.clamp(1e-12, 1.0)?;
+            (p * p.broadcast_div(&q)?.log()?)?.sum_all()
+        }
+
+        pub fn density(y: &Var, p: &Tensor, target: &Tensor, n: usize) -> Result<Tensor> {
+            let dist = dist_sq(y, n)?.clamp(1e-12f32, f32::INFINITY)?.sqrt()?;
+            let r = (p * &dist)?.sum(D::Minus1)?;
+            let log_r = r.clamp(1e-3f32, f32::INFINITY)?.log()?;
+            let c = log_r.broadcast_sub(&log_r.mean_all()?)?;
+            (&c - target)?.sqr()?.mean_all()
+        }
+    }
+
+    /// The written-out gradient matches candle's autograd of the KL and
+    /// densMAP losses, with and without exaggeration.
+    #[test]
+    fn gradient_matches_autograd() {
+        use candle_core::{Device, Tensor, Var};
+        use rand::{rngs::SmallRng, RngExt, SeedableRng};
+
+        let n = 40;
+        let mut rng = SmallRng::seed_from_u64(3);
+        let edges: Vec<(usize, usize, f32)> = (0..n)
+            .flat_map(|i| (1..=4).map(move |s| (i, (i + s * 3) % n)))
+            .map(|(a, b)| (a, b, rng.random_range(0.5..2.0)))
+            .collect();
+        let y: Vec<f32> = (0..2 * n).map(|_| rng.random_range(-3.0..3.0)).collect();
+        let mut target: Vec<f32> = (0..n).map(|_| rng.random_range(-1.0..1.0)).collect();
+        let mean = target.iter().sum::<f32>() / n as f32;
+        target.iter_mut().for_each(|t| *t -= mean);
+
+        let p = joint_probabilities(n, &edges);
+        let p_sum: f32 = p.iter().sum();
+        let dev = Device::Cpu;
+        let pt = Tensor::from_vec(p.clone(), (n, n), &dev).unwrap();
+        let tt = Tensor::from_vec(target.clone(), (n,), &dev).unwrap();
+        let lambda = 0.7_f32;
+
+        for (p_mult, dens) in [(12.0_f32, false), (1.0, false), (1.0, true)] {
+            let yv = Var::from_tensor(&Tensor::from_vec(y.clone(), (n, 2), &dev).unwrap()).unwrap();
+            let mut loss = reference::kl(&yv, &(&pt * f64::from(p_mult)).unwrap(), n).unwrap();
+            if dens {
+                let d = reference::density(&yv, &pt, &tt, n).unwrap();
+                loss = (loss + (d * f64::from(lambda)).unwrap()).unwrap();
+            }
+            let auto: Vec<f32> = loss
+                .backward()
+                .unwrap()
+                .get(&yv)
+                .unwrap()
+                .flatten_all()
+                .unwrap()
+                .to_vec1()
+                .unwrap();
+            let ours = gradient(&y, &p, p_mult, p_sum, dens.then_some((&target[..], lambda)));
+            let scale = auto.iter().fold(0.0_f32, |m, v| m.max(v.abs()));
+            for (a, o) in auto.iter().zip(&ours) {
+                assert!(
+                    (a - o).abs() <= 1e-3 * scale,
+                    "p_mult {p_mult}, density {dens}: autograd {a}, ours {o} (max {scale})"
                 );
             }
         }

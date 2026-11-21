@@ -673,6 +673,23 @@ pub fn umap_memberships(dists: &[f32]) -> Vec<f32> {
         .collect()
 }
 
+/// `edges` with one edge per pair (`i < j`), the weights of a repeated pair
+/// combined as UMAP's fuzzy union, `a + b - a·b`.
+pub fn fuzzy_union(mut edges: Vec<(usize, usize, f32)>) -> Vec<(usize, usize, f32)> {
+    for e in &mut edges {
+        *e = (e.0.min(e.1), e.0.max(e.1), e.2);
+    }
+    edges.par_sort_unstable_by_key(|&(i, j, _)| (i, j));
+    edges.dedup_by(|cur, prev| {
+        let same = (cur.0, cur.1) == (prev.0, prev.1);
+        if same {
+            prev.2 = prev.2 + cur.2 - prev.2 * cur.2;
+        }
+        same
+    });
+    edges
+}
+
 /// UMAP's fuzzy membership of each of `edges` (canonical `i < j`) from the
 /// points' own neighbour lists; see [`KnnGraph::from_columns_fuzzy`].
 fn umap_edge_weights(edges: &[(usize, usize)], lists: &[NeighbourList]) -> Vec<f32> {

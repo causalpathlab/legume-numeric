@@ -355,14 +355,14 @@ pub fn detect_delimiter(file_path: &str) -> &'static str {
 /// Gene-name → row-index resolver used across crates.
 ///
 /// Gene row names in spatial/scRNA backends commonly arrive as compound
-/// strings like `ENSG00000105329_TGFB1` (`{id}_{symbol}`) or
-/// `TGFB1:ENSG00000105329`. A user-supplied gene list (e.g. an LR pair TSV,
+/// strings like `ENSG00000000001_GENE1` (`{id}_{symbol}`) or
+/// `GENE1:ENSG00000000001`. A user-supplied gene list (e.g. an LR pair TSV,
 /// a gene module file, or an external interaction network) almost never uses
 /// the exact compound form, so we match generously:
 ///
 /// - exact match on the full compound name wins first,
 /// - when `delimiter` is set, every split component (on that char) is
-///   registered as an alternate alias, so either `"ENSG…"` or `"TGFB1"`
+///   registered as an alternate alias, so either `"ENSG…"` or `"GENE1"`
 ///   resolves to the same index,
 /// - when `allow_prefix` is `true`, the underlying `Membership` also falls
 ///   back to forward / reverse prefix matching.
@@ -597,29 +597,29 @@ mod tests {
     #[test]
     fn gene_resolver_matches_full_and_suffix() {
         let names: Vec<Box<str>> = vec![
-            "ENSG00000105329_TGFB1".into(),
-            "ENSG00000121966_CXCR4".into(),
-            "APOE".into(),
+            "ENSG00000000001_GENE1".into(),
+            "ENSG00000000002_GENE2".into(),
+            "GENE3".into(),
         ];
         let r = GeneIndexResolver::build(&names, Some('_'), false);
         // Full compound name resolves.
-        assert_eq!(r.resolve("ENSG00000105329_TGFB1"), Some(0));
+        assert_eq!(r.resolve("ENSG00000000001_GENE1"), Some(0));
         // Symbol suffix resolves.
-        assert_eq!(r.resolve("TGFB1"), Some(0));
+        assert_eq!(r.resolve("GENE1"), Some(0));
         // Ensembl id prefix resolves.
-        assert_eq!(r.resolve("ENSG00000121966"), Some(1));
+        assert_eq!(r.resolve("ENSG00000000002"), Some(1));
         // Plain symbol without any delimiter-composition still resolves.
-        assert_eq!(r.resolve("APOE"), Some(2));
+        assert_eq!(r.resolve("GENE3"), Some(2));
         // Missing gene.
         assert_eq!(r.resolve("UNKNOWN"), None);
     }
 
     #[test]
     fn gene_resolver_exact_only_without_delimiter() {
-        let names: Vec<Box<str>> = vec!["ENSG00000105329_TGFB1".into()];
+        let names: Vec<Box<str>> = vec!["ENSG00000000001_GENE1".into()];
         let r = GeneIndexResolver::build(&names, None, false);
-        assert_eq!(r.resolve("ENSG00000105329_TGFB1"), Some(0));
-        assert_eq!(r.resolve("TGFB1"), None);
+        assert_eq!(r.resolve("ENSG00000000001_GENE1"), Some(0));
+        assert_eq!(r.resolve("GENE1"), None);
     }
 
     #[test]

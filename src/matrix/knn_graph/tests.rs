@@ -623,3 +623,9 @@ fn fuzzy_weights_follow_umap_from_each_points_own_list() {
     let target = ((k + 1) as f32).log2();
     assert!(sums.iter().all(|s| (s - target).abs() < 0.05), "{sums:?}");
 }
+
+#[test]
+fn repeated_pairs_merge_as_a_fuzzy_union() {
+    let merged = fuzzy_union(vec![(2, 1, 0.5), (0, 1, 0.3), (1, 2, 0.5)]);
+    assert_eq!(merged, [(0, 1, 0.3), (1, 2, 0.75)]);
+}

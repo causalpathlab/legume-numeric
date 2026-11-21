@@ -23,9 +23,9 @@ pub(super) const EF_CONSTRUCTION: usize = 200;
 /// ~15–50, landmark/match queries use 1).
 ///
 /// This is also the ceiling on results the approximate backend can return: a
-/// query for `knn > EF_SEARCH` is silently truncated to `EF_SEARCH` neighbours
-/// (guarded by a `debug_assert!` in `ColumnDict::search_indices`). Raise this if
-/// a caller ever needs more than 128 approximate neighbours.
+/// query for `knn > EF_SEARCH` gets `EF_SEARCH` neighbours, in debug and
+/// release builds alike (see `ColumnDict`). Raise this if a caller ever needs
+/// more than 128 approximate neighbours.
 pub(super) const EF_SEARCH: usize = 128;
 
 /// Below this many points, use the exact brute-force path: recall = 1.0,

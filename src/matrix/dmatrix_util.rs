@@ -29,6 +29,57 @@ where
     out
 }
 
+/// Winsorize each row of `m` (one row per feature, one column per
+/// sample) to `median ± n_mads · MAD · 1.4826` across its columns, so a few
+/// extreme samples cannot dominate distances on the table. MAD-based, so
+/// no Gaussian shape is assumed. A row with zero MAD is left alone, and
+/// `n_mads <= 0` or fewer than 8 columns is a no-op. Returns how many
+/// values were clipped.
+pub fn winsorize_rows_inplace(m: &mut DMatrix<f32>, n_mads: f32) -> usize {
+    let (d, n) = m.shape();
+    if n_mads <= 0.0 || n < 8 || d == 0 {
+        return 0;
+    }
+    // Each row's bounds, rows in parallel; `None` for a row with zero MAD.
+    let bounds: Vec<Option<(f32, f32)>> = (0..d)
+        .into_par_iter()
+        .map(|r| {
+            let mut buf: Vec<f32> = m.row(r).iter().copied().collect();
+            let med = upper_median(&mut buf);
+            buf.iter_mut().for_each(|v| *v = (*v - med).abs());
+            let mad = upper_median(&mut buf) * 1.4826;
+            (mad > 1e-12).then_some((med - n_mads * mad, med + n_mads * mad))
+        })
+        .collect();
+    // Then one contiguous pass over the columns.
+    m.as_mut_slice()
+        .par_chunks_mut(d)
+        .map(|col| {
+            let mut clipped = 0;
+            for (v, b) in col.iter_mut().zip(&bounds) {
+                if let Some((lo, hi)) = *b {
+                    if *v < lo || *v > hi {
+                        *v = v.clamp(lo, hi);
+                        clipped += 1;
+                    }
+                }
+            }
+            clipped
+        })
+        .sum()
+}
+
+/// The element at index `len / 2` once sorted (reorders `buf`); 0 if empty.
+/// A quickselect, not `utils::median`, which sorts a copy and averages the
+/// middle two.
+fn upper_median(buf: &mut [f32]) -> f32 {
+    if buf.is_empty() {
+        return 0.0;
+    }
+    let mid = buf.len() / 2;
+    *buf.select_nth_unstable_by(mid, f32::total_cmp).1
+}
+
 pub fn subset_columns<T, D, S, I>(
     matrix: &Matrix<T, nalgebra::Dyn, D, S>,
     indices: I,

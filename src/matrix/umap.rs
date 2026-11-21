@@ -1,7 +1,7 @@
 //! Minimal UMAP-style SGD layout over a weighted edge list. Expects a
 //! pre-built fuzzy kNN graph (edges + `[0, 1]` weights); the low-d kernel
-//! is `1 / (1 + a·d^(2b))` with the standard `(a, b) ≈ (1.929, 0.7915)`
-//! fit for `spread=1, min_dist=0.1`.
+//! is `1 / (1 + a·d^(2b))` (see [`Umap::a`]); [`Umap::with_min_dist`]
+//! fits it to a `min_dist` and `spread`.
 //!
 //! Inner math uses `Vector2<f32>` (SIMD auto-vec). Edges are processed
 //! in parallel via rayon with HOGWILD! benign races on the shared
@@ -38,15 +38,17 @@ mod device;
 const A: f32 = 1.929;
 const B: f32 = 0.7915;
 
+#[derive(Debug, Clone)]
 pub struct Umap {
     pub n_epochs: usize,
     pub negative_sample_rate: usize,
     pub learning_rate: f32,
     pub seed: u64,
-    /// Low-d kernel `1/(1 + a·d^(2b))`. Default `(1.929, 0.7915)` = standard UMAP
-    /// (spread=1, min_dist=0.1). `(1.0, 1.0)` = **t-UMAP** (`uwot::tumap`): the pure
-    /// t-distribution kernel `1/(1+d²)`, whose heavier tails give gentler attraction
-    /// and a more spread-out layout — better for continuum/branch structure. Use
+    /// Low-d kernel `1/(1 + a·d^(2b))`. Default `(1.929, 0.7915)`, UMAP's
+    /// fit for spread=1, min_dist=0.001 (see [`Umap::with_min_dist`]).
+    /// `(1.0, 1.0)` = **t-UMAP** (`uwot::tumap`): the pure t-distribution
+    /// kernel `1/(1+d²)`, whose heavier tails give gentler attraction and a
+    /// more spread-out layout — better for continuum/branch structure. Use
     /// [`Umap::tumap`] for that.
     pub a: f32,
     pub b: f32,
@@ -65,6 +67,12 @@ impl Default for Umap {
     }
 }
 
+/// umap-learn's default `min_dist`, for [`Umap::with_min_dist`]; not
+/// [`Umap::default`]'s kernel (see [`Umap::a`]).
+pub const MIN_DIST: f32 = 0.1;
+/// umap-learn's default `spread`, for [`Umap::with_min_dist`].
+pub const SPREAD: f32 = 1.0;
+
 impl Umap {
     /// t-UMAP (`uwot::tumap`): the `a=b=1` kernel `1/(1+d²)` — more spread than the
     /// default standard-UMAP kernel. Other fields keep their defaults.
@@ -76,6 +84,103 @@ impl Umap {
             ..Self::default()
         }
     }
+
+    /// This SGD with UMAP's kernel for `min_dist` (how tightly points may
+    /// pack) and `spread` (the scale of the map's distances), `(a, b)`
+    /// fitted to them as umap-learn's `find_ab_params` fits them. Errs
+    /// unless `spread` is positive and finite and `min_dist` in
+    /// `[0, spread]`.
+    pub fn with_min_dist(self, min_dist: f32, spread: f32) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            spread.is_finite() && spread > 0.0,
+            "UMAP's spread must be positive and finite, not {spread}"
+        );
+        anyhow::ensure!(
+            (0.0..=spread).contains(&min_dist),
+            "UMAP's min_dist must lie in [0, spread = {spread}], not {min_dist}"
+        );
+        let (a, b) = fit_ab(min_dist, spread);
+        Ok(Self { a, b, ..self })
+    }
+
+    /// uwot's epochs for `n` points: 500 up to 10,000, else 200.
+    #[must_use]
+    pub fn default_epochs(n: usize) -> usize {
+        if n <= 10_000 {
+            500
+        } else {
+            200
+        }
+    }
+}
+
+/// UMAP's kernel `1/(1 + a x^(2b))` least-squares fitted to the target
+/// curve, `1` below `min_dist` and `exp(-(x - min_dist)/spread)` above, at
+/// 300 points of `[0, 3 spread]`: umap-learn's `find_ab_params`, here by
+/// Levenberg-Marquardt from `(1, 1)` as scipy's `curve_fit` does.
+fn fit_ab(min_dist: f32, spread: f32) -> (f32, f32) {
+    let (min_dist, spread) = (f64::from(min_dist), f64::from(spread));
+    let xs: Vec<f64> = (0..300)
+        .map(|i| 3.0 * spread * f64::from(i) / 299.0)
+        .collect();
+    let target = |x: f64| {
+        if x < min_dist {
+            1.0
+        } else {
+            (-(x - min_dist) / spread).exp()
+        }
+    };
+    let sse = |a: f64, b: f64| -> f64 {
+        xs.iter()
+            .map(|&x| (1.0 / (1.0 + a * x.powf(2.0 * b)) - target(x)).powi(2))
+            .sum()
+    };
+    let (mut a, mut b, mut lambda) = (1.0_f64, 1.0_f64, 1e-3_f64);
+    let mut err = sse(a, b);
+    for _ in 0..500 {
+        // The normal equations of the residuals' Jacobian in (a, b).
+        let (mut jaa, mut jab, mut jbb, mut ga, mut gb) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        for &x in &xs {
+            let p = x.powf(2.0 * b);
+            let m = 1.0 / (1.0 + a * p);
+            let r = m - target(x);
+            let da = -p * m * m;
+            // x^(2b) ln x vanishes at x = 0.
+            let db = if x > 0.0 {
+                -a * p * 2.0 * x.ln() * m * m
+            } else {
+                0.0
+            };
+            jaa += da * da;
+            jab += da * db;
+            jbb += db * db;
+            ga += da * r;
+            gb += db * r;
+        }
+        // Damp until a step lowers the error; none does at the minimum.
+        let mut stepped = false;
+        while lambda < 1e12 {
+            let (haa, hbb) = (jaa * (1.0 + lambda), jbb * (1.0 + lambda));
+            let det = haa * hbb - jab * jab;
+            let (na, nb) = (
+                a - (hbb * ga - jab * gb) / det,
+                b - (haa * gb - jab * ga) / det,
+            );
+            if na > 0.0 && nb > 0.0 && det.is_finite() {
+                let next = sse(na, nb);
+                if next < err {
+                    stepped = err - next > 1e-15 * err;
+                    (a, b, err, lambda) = (na, nb, next, lambda / 10.0);
+                    break;
+                }
+            }
+            lambda *= 10.0;
+        }
+        if !stepped {
+            break;
+        }
+    }
+    (a as f32, b as f32)
 }
 
 /// Shared handle for HOGWILD! parallel SGD on `coords`.
@@ -296,5 +401,50 @@ mod tests {
             let mean = (0..n).map(|i| y[i * 2 + c]).sum::<f32>() / n as f32;
             assert!(mean.abs() < 1e-3, "mean {mean}");
         }
+    }
+
+    #[test]
+    fn min_dist_and_spread_fit_the_kernel_as_umap_learn_does() {
+        // umap-learn's find_ab_params (scipy's curve_fit) at these
+        // (min_dist, spread).
+        for (min_dist, spread, a, b) in [
+            (0.1, 1.0, 1.576_943_5, 0.895_060_9),
+            (0.5, 1.0, 0.583_03, 1.334_167),
+            (0.01, 1.0, 1.895_605_9, 0.800_637_8),
+            (0.5, 2.0, 0.258_878_7, 1.057_5),
+            (0.99, 1.0, 0.119_305_3, 1.916_390_4),
+        ] {
+            let u = Umap::tumap().with_min_dist(min_dist, spread).unwrap();
+            let near = |x: f32, y: f32| (x - y).abs() < 1e-3 * y;
+            assert!(
+                near(u.a, a) && near(u.b, b),
+                "min_dist {min_dist}, spread {spread}: ({}, {}), not ({a}, {b})",
+                u.a,
+                u.b
+            );
+            assert_eq!(u.n_epochs, Umap::tumap().n_epochs);
+        }
+    }
+
+    #[test]
+    fn a_min_dist_or_spread_out_of_range_is_refused() {
+        for (min_dist, spread) in [
+            (-0.1, 1.0),
+            (0.1, 0.0),
+            (1.5, 1.0),
+            (0.1, f32::INFINITY),
+            (f32::NAN, 1.0),
+        ] {
+            assert!(
+                Umap::default().with_min_dist(min_dist, spread).is_err(),
+                "({min_dist}, {spread})"
+            );
+        }
+    }
+
+    #[test]
+    fn epochs_follow_uwot() {
+        assert_eq!(Umap::default_epochs(10_000), 500);
+        assert_eq!(Umap::default_epochs(10_001), 200);
     }
 }

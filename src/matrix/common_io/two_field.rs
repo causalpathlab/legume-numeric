@@ -228,7 +228,7 @@ mod tests {
     fn quotes_unquote_and_trim_inside_but_single_ones_never_group() {
         assert_eq!(two("'GENE2',' CT 2'"), ["GENE2", "CT 2"]);
         assert_eq!(two("\"CT 1 \"\tONT:0000001"), ["CT 1", "ONT:0000001"]);
-        assert_eq!(two("RLBP1,Muller's glia"), ["RLBP1", "Muller's glia"]);
+        assert_eq!(two("GENE11,CT5's subtype"), ["GENE11", "CT5's subtype"]);
     }
 
     #[test]

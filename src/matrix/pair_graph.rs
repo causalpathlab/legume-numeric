@@ -750,8 +750,8 @@ mod tests {
 
     #[test]
     fn from_edge_list_exact_match() {
-        let file = write_edge_file(&["TP53\tBRCA1", "BRCA1\tEGFR", "TP53\tEGFR"]);
-        let names = names_of(&["TP53", "BRCA1", "EGFR", "MYC"]);
+        let file = write_edge_file(&["GENE1\tGENE2", "GENE2\tGENE3", "GENE1\tGENE3"]);
+        let names = names_of(&["GENE1", "GENE2", "GENE3", "GENE4"]);
         let g = FeaturePairGraph::from_edge_list(file.path().to_str().unwrap(), names, false, None)
             .unwrap();
         assert_eq!(g.num_features(), 4);
@@ -770,8 +770,8 @@ mod tests {
 
     #[test]
     fn from_edge_list_unmatched_skipped() {
-        let file = write_edge_file(&["TP53\tBRCA1", "UNK\tBRCA1", "TP53\tUNK2"]);
-        let names = names_of(&["TP53", "BRCA1"]);
+        let file = write_edge_file(&["GENE1\tGENE2", "UNK\tGENE2", "GENE1\tUNK2"]);
+        let names = names_of(&["GENE1", "GENE2"]);
         let g = FeaturePairGraph::from_edge_list(file.path().to_str().unwrap(), names, false, None)
             .unwrap();
         assert_eq!(g.feature_edges, vec![(0, 1)]);
@@ -779,10 +779,10 @@ mod tests {
 
     #[test]
     fn from_edge_list_prefix_and_delim_match() {
-        let file = write_edge_file(&["TP53\tBRCA1"]);
+        let file = write_edge_file(&["GENE1\tGENE2"]);
         let g_prefix = FeaturePairGraph::from_edge_list(
             file.path().to_str().unwrap(),
-            names_of(&["TP53.1", "BRCA1.2"]),
+            names_of(&["GENE1.1", "GENE2.2"]),
             true,
             None,
         )
@@ -791,7 +791,7 @@ mod tests {
 
         let g_delim = FeaturePairGraph::from_edge_list(
             file.path().to_str().unwrap(),
-            names_of(&["TP53.v1", "BRCA1.v2"]),
+            names_of(&["GENE1.v1", "GENE2.v2"]),
             false,
             Some('.'),
         )

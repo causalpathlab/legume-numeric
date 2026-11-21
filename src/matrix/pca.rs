@@ -132,5 +132,21 @@ pub fn pc_layout_init(data: &Mat, rank: usize, skip: usize, seed: u64) -> (Optio
     }
 }
 
+/// Row-major `n × 2` SGD init from the top two principal components of
+/// `data` (rows = points), each feature mean-centred across the points
+/// first: for signed data, such as a projection or an embedding, whose
+/// first component is real structure rather than the mean profile that
+/// [`pc_scores`]'s `skip = 1` drops. Falls back as [`pc_layout_init`]
+/// does, and with fewer than 3 points.
+#[must_use]
+pub fn centred_pc_init_2d(mut data: Mat, seed: u64) -> Vec<f32> {
+    use crate::matrix::traits::MatOps;
+    if data.nrows() < 3 {
+        return random_init_2d(data.nrows(), seed);
+    }
+    data.centre_columns_inplace();
+    pc_layout_init(&data, 2, 0, seed).1
+}
+
 #[cfg(test)]
 mod tests;

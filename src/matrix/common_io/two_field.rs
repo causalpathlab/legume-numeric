@@ -8,7 +8,7 @@ use std::io::BufRead;
 
 /// The rows of a two-column table. Each line splits by one rule: a line with
 /// a tab outside double quotes (trailing whitespace aside) splits on its tabs
-/// only, so a cell keeps its commas (`CD4-positive, alpha-beta T cell`); a
+/// only, so a cell keeps its commas (`CT4, subtype 1`); a
 /// line without one is CSV, split on commas except inside a double-quoted
 /// cell. In a double-quoted cell, on either kind of line, `""` stands for a
 /// quote, and text after the closing quote is kept, as CSV readers keep it.
@@ -201,26 +201,23 @@ mod tests {
     #[test]
     fn a_tab_line_splits_on_its_tabs_only_and_keeps_empty_cells() {
         assert_eq!(
-            two("CD4\tCD4-positive, alpha-beta T cell\t\tnote \r"),
-            ["CD4", "CD4-positive, alpha-beta T cell"]
+            two("GENE6\tCT4, subtype 1\t\tnote \r"),
+            ["GENE6", "CT4, subtype 1"]
         );
-        assert_eq!(two("\tT cell"), ["", "T cell"]);
-        assert_eq!(two("MS4A1,B cell\t"), ["MS4A1", "B cell"], "trailing tab");
-        assert_eq!(two("CD4\t\"a \"\"b\"\" c\""), ["CD4", r#"a "b" c"#]);
+        assert_eq!(two("\tCT 1"), ["", "CT 1"]);
+        assert_eq!(two("GENE2,CT 2\t"), ["GENE2", "CT 2"], "trailing tab");
+        assert_eq!(two("GENE6\t\"a \"\"b\"\" c\""), ["GENE6", r#"a "b" c"#]);
     }
 
     #[test]
     fn a_comma_line_keeps_a_quoted_comma_in_its_cell() {
         assert_eq!(
-            cells(r#"CD4,"CD4-positive, alpha-beta T cell",x"#),
-            (
-                vec!["CD4".into(), "CD4-positive, alpha-beta T cell".into()],
-                true
-            )
+            cells(r#"GENE6,"CT4, subtype 1",x"#),
+            (vec!["GENE6".into(), "CT4, subtype 1".into()], true)
         );
         assert_eq!(two(r#" "a ""b"" c" , d"#), [r#"a "b" c"#, "d"]);
-        assert_eq!(two(r#"CD4,"T cell" extra,x"#), ["CD4", "T cell extra"]);
-        assert_eq!(two("CD4,\"naive\tT cell\""), ["CD4", "naive\tT cell"]);
+        assert_eq!(two(r#"GENE6,"CT 1" extra,x"#), ["GENE6", "CT 1 extra"]);
+        assert_eq!(two("GENE6,\"naive\tCT 1\""), ["GENE6", "naive\tCT 1"]);
         assert_eq!(
             cells("GENE,CT3, sub b"),
             (vec!["GENE".into(), "CT3".into()], true)
@@ -229,31 +226,31 @@ mod tests {
 
     #[test]
     fn quotes_unquote_and_trim_inside_but_single_ones_never_group() {
-        assert_eq!(two("'MS4A1',' B cell'"), ["MS4A1", "B cell"]);
-        assert_eq!(two("\"T cell \"\tCL:0000084"), ["T cell", "CL:0000084"]);
-        assert_eq!(two("RLBP1,Muller's glia"), ["RLBP1", "Muller's glia"]);
+        assert_eq!(two("'GENE2',' CT 2'"), ["GENE2", "CT 2"]);
+        assert_eq!(two("\"CT 1 \"\tONT:0000001"), ["CT 1", "ONT:0000001"]);
+        assert_eq!(two("GENE11,CT5's subtype"), ["GENE11", "CT5's subtype"]);
     }
 
     #[test]
     fn a_byte_order_mark_and_an_unclosed_quote_are_read_leniently() {
         assert_eq!(two("\u{feff}gene,celltype"), ["gene", "celltype"]);
-        assert_eq!(two(r#"CD4,"T cell, open"#), ["CD4", r#""T cell, open"#]);
+        assert_eq!(two(r#"GENE6,"CT 1, open"#), ["GENE6", r#""CT 1, open"#]);
     }
 
     #[test]
     fn rows_skip_blanks_and_comments_and_count_gaps_and_wide_comma_rows() {
         let got = TwoFieldRows::from_text(
-            "# note\n  % note\n\n \n\"#x\",y\nLONELY\n\tT cell\nCD3E,\nCD14,Monocyte,,\n\
-             CD8A,T cell, CD8\nCD4\tT\tx\nCD2,T,x\t\n",
+            "# note\n  % note\n\n \n\"#x\",y\nLONELY\n\tCT 1\nGENE7,\nGENE8,CT3,,\n\
+             GENE1,CT 1, GENE10\nGENE6\tT\tx\nGENE9,T,x\t\n",
         );
         let rows: Vec<(&str, &str)> = got.rows.iter().map(|(a, b)| (&**a, &**b)).collect();
         assert_eq!(
             rows,
             [
-                ("CD14", "Monocyte"),
-                ("CD8A", "T cell"),
-                ("CD4", "T"),
-                ("CD2", "T")
+                ("GENE8", "CT3"),
+                ("GENE1", "CT 1"),
+                ("GENE6", "T"),
+                ("GENE9", "T")
             ],
             "a first cell starting with # or %, quoted or indented, is a comment"
         );
@@ -268,14 +265,14 @@ mod tests {
     #[test]
     fn rows_read_through_gzip_and_name_an_unreadable_line() {
         let dir = tempfile::tempdir().unwrap();
-        let gz = scratch_gz(&dir, "p.tsv.gz", "CD3E\tT cell\n");
+        let gz = scratch_gz(&dir, "p.tsv.gz", "GENE7\tCT 1\n");
         let rows = read_two_field_rows(&gz).unwrap().rows;
-        assert_eq!(rows, [(Box::from("CD3E"), Box::from("T cell"))]);
-        let plain = scratch(&dir, "p.tsv", "CD3E\tT cell\n");
+        assert_eq!(rows, [(Box::from("GENE7"), Box::from("CT 1"))]);
+        let plain = scratch(&dir, "p.tsv", "GENE7\tCT 1\n");
         assert_eq!(read_two_field_rows(&plain).unwrap().rows, rows);
 
         let bad = dir.path().join("bad.tsv");
-        std::fs::write(&bad, b"CD3E\tT cell\nCD14\tMono\xffcyte\n").unwrap();
+        std::fs::write(&bad, b"GENE7\tCT 1\nGENE8\tCT\xff3\n").unwrap();
         let err = format!(
             "{:#}",
             read_two_field_rows(bad.to_str().unwrap()).unwrap_err()

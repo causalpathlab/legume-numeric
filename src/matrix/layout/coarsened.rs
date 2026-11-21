@@ -17,7 +17,7 @@ use crate::matrix::coarsen::{coarsen, collapse};
 use crate::matrix::knn_graph::{KnnGraph, KnnGraphArgs};
 use rayon::prelude::*;
 
-type Edges = Vec<(usize, usize, f32)>;
+pub(super) type Edges = Vec<(usize, usize, f32)>;
 
 /// Args of [`coarsened`].
 #[derive(Debug, Clone)]
@@ -66,8 +66,17 @@ pub fn fuzzy_graph_of_columns(
     knn: usize,
     block_size: usize,
 ) -> anyhow::Result<Edges> {
+    fuzzy_graph_of_rows(&table_kn.transpose(), knn, block_size)
+}
+
+/// [`fuzzy_graph_of_columns`] of a table already one row per point.
+pub(super) fn fuzzy_graph_of_rows(
+    rows: &Mat,
+    knn: usize,
+    block_size: usize,
+) -> anyhow::Result<Edges> {
     KnnGraph::fuzzy_edges_of_rows(
-        &table_kn.transpose(),
+        rows,
         KnnGraphArgs {
             knn: knn.saturating_sub(1).max(1),
             block_size,
@@ -83,6 +92,55 @@ pub fn coarsened(table_kn: &Mat, args: &CoarsenArgs) -> anyhow::Result<Coarsened
     let edges = fuzzy_graph_of_columns(table_kn, args.knn, args.block_size)?;
     let membership = coarsen(n, &edges, args.n_landmarks.clamp(1, n.max(1)), args.seed);
     Ok(Coarsened::from_membership(table_kn, &edges, membership))
+}
+
+/// The columns grouped by `codes` (any ids, one per column) with the long
+/// tail dropped: the fewest largest groups that hold at least `coverage` of
+/// the columns are kept, numbered `0..` in order of first appearance, and a
+/// column of a dropped group is `usize::MAX`. `coverage >= 1` (or NaN)
+/// keeps every group; `coverage <= 0` keeps the largest alone. For
+/// [`Coarsened::from_membership`].
+#[must_use]
+pub fn groups_covering(codes: &[usize], coverage: f32) -> Vec<usize> {
+    // Hashed, not `knn_graph::compact_labels`'s `max + 1` slots: codes can
+    // be sparse and large (projection bits run to 2^d).
+    let mut id_of = rustc_hash::FxHashMap::default();
+    let ids: Vec<usize> = codes
+        .iter()
+        .map(|&c| {
+            let next = id_of.len();
+            *id_of.entry(c).or_insert(next)
+        })
+        .collect();
+    let n_groups = id_of.len();
+    if coverage.is_nan() || coverage >= 1.0 {
+        return ids;
+    }
+    let mut size = vec![0_usize; n_groups];
+    for &g in &ids {
+        size[g] += 1;
+    }
+    let target = (coverage.max(0.0) * ids.len() as f32).ceil() as usize;
+    let mut by_size: Vec<usize> = (0..n_groups).collect();
+    by_size.sort_by(|&a, &b| size[b].cmp(&size[a]));
+    let mut keep = vec![false; n_groups];
+    let mut held = 0;
+    for &g in &by_size {
+        keep[g] = true;
+        held += size[g];
+        if held >= target {
+            break;
+        }
+    }
+    let mut renumber = vec![usize::MAX; n_groups];
+    let mut next = 0;
+    for g in 0..n_groups {
+        if keep[g] {
+            renumber[g] = next;
+            next += 1;
+        }
+    }
+    ids.into_iter().map(|g| renumber[g]).collect()
 }
 
 impl Coarsened {
@@ -284,5 +342,22 @@ mod tests {
         let unplaced = Coarsened::from_membership(&table, &edges, vec![0, 0, 1, 1, usize::MAX]);
         let between = unplaced.place_cells(&table, &pb_coords, 2, 10.0)[(4, 0)];
         assert!(between > 1.0 && between < 9.0, "{between}");
+    }
+
+    /// Arbitrary codes become ids `0..` in order of first appearance; the
+    /// largest groups covering the share asked are kept, the rest in none.
+    #[test]
+    fn groups_covering_keeps_the_largest_groups() {
+        // Groups of 5, 1, 3 and 1 columns, under codes in no order.
+        let codes = [9, 9, 9, 9, 9, 4, 70, 70, 70, 2];
+        let x = usize::MAX;
+        assert_eq!(groups_covering(&codes, 0.8), [0, 0, 0, 0, 0, x, 1, 1, 1, x]);
+        assert_eq!(groups_covering(&codes, 1.0), [0, 0, 0, 0, 0, 1, 2, 2, 2, 3]);
+        assert_eq!(
+            groups_covering(&codes, f32::NAN),
+            groups_covering(&codes, 1.0)
+        );
+        assert_eq!(groups_covering(&codes, 0.0), [0, 0, 0, 0, 0, x, x, x, x, x]);
+        assert!(groups_covering(&[], 0.5).is_empty());
     }
 }

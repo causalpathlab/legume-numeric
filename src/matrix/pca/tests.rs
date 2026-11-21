@@ -189,3 +189,22 @@ fn skipping_every_component_errors() {
     assert!(pc_scores(&data, 2, 3).is_err());
     assert!(pc_scores(&data, 0, 1).is_err());
 }
+
+/// Points along a line far from the origin, jittered across it, both
+/// directions orthogonal to the offset and centred on it: uncentred, the first component is
+/// the offset, on which every point scores alike; centred, it is the line,
+/// and the init orders the points along it.
+#[test]
+fn centred_init_lays_points_along_their_spread_not_their_offset() {
+    let n = 50;
+    let (along, across) = ([1.0, -1.0, 0.0], [1.0, 1.0, -2.0]);
+    let data = Mat::from_fn(n, 3, |i, d| {
+        let jitter = if i % 2 == 0 { 0.1 } else { -0.1 };
+        100.0 + along[d] * (i as f32 - 24.5) + across[d] * jitter
+    });
+    let init = centred_pc_init_2d(data, 7);
+    let x: Vec<f32> = (0..n).map(|i| init[2 * i]).collect();
+    let pos: Vec<f32> = (0..n).map(|i| i as f32).collect();
+    assert!(pearson(&x, &pos).abs() > 0.99, "{x:?}");
+    assert_eq!(centred_pc_init_2d(Mat::zeros(2, 3), 7).len(), 4);
+}

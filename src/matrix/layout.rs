@@ -26,9 +26,20 @@
 //! - `tsne_layout_2d_on_graph` (feature `tensor`): t-SNE of the graph's
 //!   affinities, by the exact gradient, optionally density-preserving (densMAP).
 //!
+//! Layouts of a table's columns (`dims × n`, one column per point), every
+//! point laid out, no coarsening, as [`UmapLayoutArgs`] sets them:
+//!
+//! - [`umap_layout_2d_of_columns`]: UMAP of the columns' fuzzy kNN graph
+//!   from a centred PCA(2) start.
+//! - [`joint_umap_layout_2d_of_columns`]: cells and the features
+//!   co-embedded with them, in one UMAP.
+//!
 //! [`coarsened`] coarsens a table's kNN graph into pseudobulks for any of
-//! these to lay out, and [`Coarsened::place_cells`] places every cell on
-//! the result by Nyström.
+//! these to lay out (or [`Coarsened::from_membership`] takes a grouping
+//! given, its long tail dropped by [`groups_covering`]), and
+//! [`Coarsened::place_cells`] places every cell on the result by Nyström.
+//! [`crate::matrix::dmatrix_util::winsorize_rows_inplace`] clips a table's
+//! outliers before it is laid out.
 //!
 //! With no I/O and no CLI dependencies, they can be consumed by `senna`
 //! (PB-landmark layout), `senna annotate-gem` (cell layout off the leiden
@@ -54,7 +65,8 @@ mod stress;
 mod sugiyama;
 #[cfg(feature = "tensor")]
 mod tsne;
-pub use coarsened::{coarsened, fuzzy_graph_of_columns, CoarsenArgs, Coarsened};
+mod umap_columns;
+pub use coarsened::{coarsened, fuzzy_graph_of_columns, groups_covering, CoarsenArgs, Coarsened};
 pub use diffusion::diffusion_map_2d_on_graph;
 pub use forceatlas2::forceatlas2_layout_2d_on_graph;
 pub use lle::lle_layout_2d_on_graph;
@@ -63,6 +75,9 @@ pub use stress::stress_layout_2d_on_graph;
 pub use sugiyama::sugiyama_layout_2d_on_graph;
 #[cfg(feature = "tensor")]
 pub use tsne::{tsne_layout_2d_on_graph, TSne, TsneArgs};
+pub use umap_columns::{
+    joint_umap_layout_2d_of_columns, umap_layout_2d_of_columns, UmapLayoutArgs,
+};
 
 /// [`crate::matrix::umap::Umap`] SGD of the `n` nodes of the undirected
 /// graph `edges` (`(i, j, weight)`, weights affinities), from a
@@ -75,7 +90,18 @@ pub fn umap_layout_2d_on_graph(
     umap: &crate::matrix::umap::Umap,
 ) -> Mat {
     let init = crate::matrix::pca::random_init_2d(n, umap.seed);
-    Mat::from_row_slice(n, 2, &umap.fit(edges, n, &init))
+    fit_umap_2d(umap, edges, &init)
+}
+
+/// `umap`'s SGD of the `init.len() / 2` points of `edges` from `init`
+/// (row-major `n × 2`). Returns `n × 2`.
+fn fit_umap_2d(
+    umap: &crate::matrix::umap::Umap,
+    edges: &[(usize, usize, f32)],
+    init: &[f32],
+) -> Mat {
+    let n = init.len() / 2;
+    Mat::from_row_slice(n, 2, &umap.fit(edges, n, init))
 }
 
 ///////////

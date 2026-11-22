@@ -754,7 +754,7 @@ pub fn partition_features(
 ///
 /// One declaration, one wording, one default, flattened by every command that
 /// can train at reduced feature resolution — the same shape as
-/// `crate::alg::hvg::HvgCliArgs`, and read alongside it: selection decides which
+/// data-beans' `alg::hvg::HvgCliArgs`, and read alongside it: selection decides which
 /// features weigh on the sketch, this decides how many distinct outputs the
 /// model answers for.
 #[derive(Args, Debug, Clone, Serialize, Deserialize)]

@@ -1,6 +1,6 @@
 [package]
 name = "legume-numeric"
-version = "0.10.10"
+version = "0.10.11"
 authors = ["Yongjin Park <ypp@stat.ubc.ca>"]
 edition = "2021"
 license = "MIT"
@@ -29,6 +29,7 @@ matrix = [
     "dep:parquet",
     "dep:petgraph",
     "dep:rand_distr",
+    "dep:serde",
     "dep:tempfile",
     "dep:zip",
 ]
@@ -81,6 +82,8 @@ indicatif = { version = "^0.18", features = ["rayon"], optional = true }
 parquet = { version = "59", default-features = false, features = ["snap", "brotli", "flate2-zlib-rs", "lz4", "zstd", "simdutf8"], optional = true }
 rustc-hash = "2.1"
 log = { version = "0.4", optional = true }
+# Only for the feature coarsening a model saves beside its weights.
+serde = { version = "1.0", features = ["derive"], optional = true }
 # Zarr stores are zipped `Stored`; deflate and zstd cover other archivers.
 # bzip2, lzma, xz, ppmd, deflate64 and AES (refused anyway) are left out.
 zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs", "zstd"], optional = true }

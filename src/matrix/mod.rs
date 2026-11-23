@@ -1,7 +1,6 @@
 pub mod agreement;
 pub mod archetypal;
 pub mod branching;
-pub mod cell_count_stream;
 pub mod clap_defaults;
 pub mod clustering;
 pub mod coarsen;

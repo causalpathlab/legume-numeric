@@ -199,9 +199,16 @@ impl ParquetReader {
     /// * `row_name_index`: if `None`, no column is treated as row names
     ///   (row names will be generated as "0", "1", "2", ...)
     ///
-    /// * `select_column_index`: if `None`, use all the other columns
+    /// * `select_column_index`: columns to read by position; when given and
+    ///   non-empty, it overrides `select_column_names`. An index past the
+    ///   last column is an error.
     ///
-    /// * `select_column_names`: if `None`, use all the other columns
+    /// * `select_column_names`: candidate columns to read by name; names
+    ///   absent from the file are skipped, but if none is present this
+    ///   errors, listing the names asked for and the file's columns.
+    ///
+    /// With neither selector given (`None` or empty), every column other
+    /// than the row-name one is read. Only numeric columns are kept.
     pub fn new(
         file_path: &str,
         row_name_index: Option<usize>,
@@ -214,31 +221,68 @@ impl ParquetReader {
         let nrows = metadata.file_metadata().num_rows() as usize;
         let fields = metadata.file_metadata().schema().get_fields();
 
-        let select_columns: HashSet<usize> = {
-            let mut indices: HashSet<usize> = Default::default();
-
-            // Add indices from `select_columns_index` if provided
-            if let Some(select) = select_columns_index {
-                indices.extend(select.iter().copied());
+        // The file's columns for an error message, capped so a wide matrix
+        // does not flood the log.
+        let file_columns = || {
+            const SHOWN: usize = 20;
+            let mut s = fields
+                .iter()
+                .take(SHOWN)
+                .map(|f| f.name())
+                .collect::<Vec<_>>()
+                .join(", ");
+            if fields.len() > SHOWN {
+                s.push_str(&format!(", ... ({} in all)", fields.len()));
             }
+            s
+        };
 
-            // Add indices from `select_columns_names` if provided
-            if let Some(names) = select_columns_names {
-                indices.extend(fields.iter().enumerate().filter_map(|(j, f)| {
-                    if names.iter().any(|name| name.as_ref() == f.name()) {
-                        Some(j)
-                    } else {
-                        None
-                    }
-                }));
-            }
+        if let Some(j) = row_name_index.filter(|&j| j >= fields.len()) {
+            anyhow::bail!(
+                "{file_path}: row-name column index {j} out of range; the file has {} column(s): {}",
+                fields.len(),
+                file_columns()
+            );
+        }
+        let out_of_range: std::collections::BTreeSet<usize> = select_columns_index
+            .unwrap_or_default()
+            .iter()
+            .copied()
+            .filter(|&j| j >= fields.len())
+            .collect();
+        anyhow::ensure!(
+            out_of_range.is_empty(),
+            "{file_path}: column index {out_of_range:?} out of range; the file has {} column(s): {}",
+            fields.len(),
+            file_columns()
+        );
 
-            // Default to all columns if neither is provided
-            if indices.is_empty() {
-                (0..fields.len()).collect()
-            } else {
-                indices
+        // Explicit indices override names, as in the delimited-text reader.
+        // Names are candidates: absent ones are skipped, but if none is
+        // present that is an error rather than a read of every column.
+        // An empty selector counts as none given.
+        let select_columns: HashSet<usize> = match (
+            select_columns_index.filter(|ix| !ix.is_empty()),
+            select_columns_names.filter(|names| !names.is_empty()),
+        ) {
+            (Some(select), _) => select.iter().copied().collect(),
+            (None, Some(names)) => {
+                let wanted: HashSet<&str> = names.iter().map(|name| name.as_ref()).collect();
+                let matched: HashSet<usize> = fields
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| wanted.contains(f.name()))
+                    .map(|(j, _)| j)
+                    .collect();
+                anyhow::ensure!(
+                    !matched.is_empty(),
+                    "{file_path}: none of the column(s) {} found; the file has: {}",
+                    names.join(", "),
+                    file_columns()
+                );
+                matched
             }
+            (None, None) => (0..fields.len()).collect(),
         };
 
         // Get the type of the row name column for later use (if specified)

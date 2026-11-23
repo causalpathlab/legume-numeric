@@ -89,3 +89,103 @@ fn string_columns_by_name_format_numeric_cells_instead_of_blanking_them() {
     assert_eq!(cols[1], genes);
     assert_eq!(cols[2], labels(&["0.5", "2"]));
 }
+
+/// A small `row, a, b, c` table: one string name column, three numeric ones.
+fn abc_table(dir: &tempfile::TempDir) -> String {
+    let f = dir.path().join("t.parquet");
+    let f = f.to_str().unwrap().to_string();
+    let rows = labels(&["r0", "r1"]);
+    write_table(
+        &f,
+        &[
+            ("row".into(), Column::Str(&rows)),
+            ("a".into(), Column::F32(&[1.0, 2.0])),
+            ("b".into(), Column::F32(&[3.0, 4.0])),
+            ("c".into(), Column::F32(&[5.0, 6.0])),
+        ],
+    )
+    .unwrap();
+    f
+}
+
+/// Asking for columns by name that the file does not have is an error, not a
+/// silent read of every other column.
+#[test]
+fn names_that_match_nothing_are_an_error_naming_what_is_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = abc_table(&dir);
+    let err = ParquetReader::new(&f, Some(0), None, Some(&labels(&["x", "y"])))
+        .err()
+        .expect("unmatched names must not fall back to all columns")
+        .to_string();
+    for want in ["x", "y", "row", "a", "b", "c"] {
+        assert!(err.contains(want), "error {err:?} should mention {want:?}");
+    }
+}
+
+/// Names are candidates: callers pass a list covering several layouts at
+/// once, so an absent name is skipped as long as one is present.
+#[test]
+fn absent_names_are_skipped_when_another_matches() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = abc_table(&dir);
+    let r = ParquetReader::new(&f, Some(0), None, Some(&labels(&["zz", "b"]))).unwrap();
+    assert_eq!(r.column_names, labels(&["b"]));
+    assert_eq!(r.row_major_data, vec![3.0, 4.0]);
+}
+
+#[test]
+fn a_row_name_index_past_the_last_column_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = abc_table(&dir);
+    let err = ParquetReader::new(&f, Some(7), None, None)
+        .err()
+        .expect("an out-of-range row-name index must not panic")
+        .to_string();
+    assert!(err.contains("row-name") && err.contains('7'), "{err}");
+}
+
+#[test]
+fn matched_names_select_only_those_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = abc_table(&dir);
+    let r = ParquetReader::new(&f, Some(0), None, Some(&labels(&["c", "a"]))).unwrap();
+    assert_eq!(r.column_names, labels(&["a", "c"]));
+    assert_eq!(r.row_major_data, vec![1.0, 5.0, 2.0, 6.0]);
+}
+
+/// No selector, or only empty ones, still reads every numeric column.
+#[test]
+fn no_selector_reads_every_numeric_column() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = abc_table(&dir);
+    let all = labels(&["a", "b", "c"]);
+    let r = ParquetReader::new(&f, Some(0), None, None).unwrap();
+    assert_eq!(r.column_names, all);
+    let r = ParquetReader::new(&f, Some(0), Some(&[]), Some(&[])).unwrap();
+    assert_eq!(r.column_names, all);
+}
+
+/// Explicit indices override names, as in the delimited-text reader: callers
+/// pass their default names alongside user indices, and those defaults need
+/// not exist in the file nor widen the selection when they do.
+#[test]
+fn indices_override_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = abc_table(&dir);
+    let r = ParquetReader::new(&f, Some(0), Some(&[2]), Some(&labels(&["x"]))).unwrap();
+    assert_eq!(r.column_names, labels(&["b"]));
+    let r = ParquetReader::new(&f, Some(0), Some(&[2]), Some(&labels(&["a"]))).unwrap();
+    assert_eq!(r.column_names, labels(&["b"]));
+}
+
+#[test]
+fn an_index_past_the_last_column_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = abc_table(&dir);
+    let err = ParquetReader::new(&f, Some(0), Some(&[1, 9]), None)
+        .err()
+        .expect("an out-of-range index must not be dropped")
+        .to_string();
+    assert!(err.contains('9'), "{err}");
+}

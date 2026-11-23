@@ -114,6 +114,11 @@ impl BatchNorm {
                 num_features
             );
         }
+        // One value per feature has no variance: the unbiased `n / (n - 1)`
+        // would write NaN into `running_var`. Use the running stats, unchanged.
+        if x.elem_count() < 2 * num_features {
+            return self.forward_eval(x);
+        }
         let x = x.to_dtype(internal_dtype)?;
         let x = x.transpose(0, 1)?;
         let x_dims = x.dims().to_vec();
@@ -197,3 +202,7 @@ impl ModuleT for BatchNorm {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "batch_norm_tests.rs"]
+mod tests;

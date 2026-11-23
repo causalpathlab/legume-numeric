@@ -57,7 +57,7 @@ mod rows;
 #[cfg(test)]
 pub(crate) mod tests;
 
-use backend::{build_column_dict, Backend, EF_SEARCH};
+use backend::{build_column_dict, Backend};
 pub(crate) use backend::{EXACT_THRESHOLD, KNN_SEED};
 pub use metric::l2_simd;
 pub use rows::{knn_rows, ALL_PAIRS_THRESHOLD};
@@ -66,7 +66,10 @@ pub use rows::{knn_rows, ALL_PAIRS_THRESHOLD};
 ///
 /// The backend is chosen automatically at construction: an exact brute-force
 /// scan below `EXACT_THRESHOLD` points, or a seeded instant-distance HNSW above
-/// it (see the `backend` module). Both are deterministic. `data_vec` is the
+/// it (see the `backend` module). Both are deterministic. A search returns at
+/// most `knn` neighbours, and from the HNSW at most 128 (its beam width): a
+/// caller that weighs neighbours by how many came back, as
+/// [`crate::matrix::knn_graph::umap_memberships`] does, needs nothing more. `data_vec` is the
 /// canonical original-order store of the points (used for self-search queries,
 /// `dim`, and the exact path); read it through [`points`](Self::points) /
 /// [`num_points`](Self::num_points).
@@ -295,12 +298,7 @@ where
             Backend::Exact => exact::topk(&self.data_vec, &query.data, fetch),
             Backend::Approx(map) => {
                 // `EF_SEARCH` is baked into the index at build, so the search
-                // yields at most that many candidates; a larger request would be
-                // silently truncated (see the const's doc).
-                debug_assert!(
-                    fetch <= EF_SEARCH,
-                    "knn={knn} exceeds EF_SEARCH={EF_SEARCH}; approx results are truncated"
-                );
+                // yields at most that many candidates (see the const's doc).
                 // `search` is reset internally by instant-distance and its `ef`
                 // is overwritten from the index, so a reused (or fresh) buffer is
                 // equally correct here.

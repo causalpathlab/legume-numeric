@@ -87,12 +87,41 @@ fn a_sparse_bin_merges_into_its_nearest_and_a_lone_bin_is_none() {
     let batch: Vec<Box<str>> = (0..155)
         .map(|i| if i < 125 { "a" } else { "b" }.into())
         .collect();
-    let remap = merge_sparse_levels(&mut bin, &cells_by_batch(&batch), &centroids, 10);
+    let labels: Vec<usize> = bin.iter().map(|c| c.expect("all binned")).collect();
+    let (remap, rejoined) =
+        merge_sparse_levels(&mut bin, &labels, &cells_by_batch(&batch), &centroids, 10);
+    assert_eq!(rejoined, 0);
     assert!(bin[60..65].iter().all(|&c| c == Some(0)));
     assert_eq!(bin[65], Some(2));
     assert!(bin[125..].iter().all(Option::is_none));
     assert_eq!(remap["a"], [Some(0), Some(0), Some(2)]);
     assert_eq!(remap["b"], [None, None, None]);
+}
+
+#[test]
+fn a_few_plain_cells_join_their_bin_and_many_stay_plain() {
+    let centroids = DMatrix::from_row_slice(2, 1, &[0.0, 10.0]);
+    // Batch a: 30 in bin 0, 30 in bin 1, 3 cleared (component 1).
+    // Batch b: 30 in bin 0, 30 in bin 1, 12 cleared (component 0).
+    let labels: Vec<usize> = (0..135)
+        .map(|i| match i {
+            0..30 | 63..93 | 123.. => 0,
+            _ => 1,
+        })
+        .collect();
+    let mut bin: Vec<Option<usize>> = labels
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| (!(60..63).contains(&i) && i < 123).then_some(c))
+        .collect();
+    let batch: Vec<Box<str>> = (0..135)
+        .map(|i| if i < 63 { "a" } else { "b" }.into())
+        .collect();
+    let (_, rejoined) =
+        merge_sparse_levels(&mut bin, &labels, &cells_by_batch(&batch), &centroids, 10);
+    assert_eq!(rejoined, 3);
+    assert!(bin[60..63].iter().all(|&c| c == Some(1)));
+    assert!(bin[123..].iter().all(Option::is_none));
 }
 
 #[test]

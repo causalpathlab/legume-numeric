@@ -102,6 +102,10 @@ pub struct CovariateBins {
     pub batch_bins: BTreeMap<Box<str>, Vec<Option<usize>>>,
     pub plain_cells: usize,
     pub one_bin_groups: usize,
+    /// Cells the one-bin guard cleared that rejoined a bin, their batch
+    /// having fewer than `min_level` of them.
+    #[serde(default)]
+    pub rejoined: usize,
 }
 
 /// Each cell's bin (`None`: no bin) and the fit.
@@ -247,7 +251,8 @@ pub fn fit_bins(
     let groups = coarse_groups(proj_kn, &remove, o.groups, o.group_dims, o.seed)?;
     let one_bin_groups = clear_one_bin_groups(&mut bin, &groups, k, o.one_bin);
     let centres = DMatrix::from_fn(k, binned.len(), |c, j| fit.model.means[c][j]);
-    let batch_bins = merge_sparse_levels(&mut bin, &by_batch, &centres, o.min_level);
+    let (batch_bins, rejoined) =
+        merge_sparse_levels(&mut bin, &fit.labels, &by_batch, &centres, o.min_level);
     let plain_cells = bin.iter().filter(|c| c.is_none()).count();
     let model = CovariateBins {
         covariate_of: covariate_of.to_vec(),
@@ -267,6 +272,7 @@ pub fn fit_bins(
         batch_bins,
         plain_cells,
         one_bin_groups,
+        rejoined,
     };
     Ok(Ok((bin, model)))
 }
@@ -352,16 +358,21 @@ fn clear_one_bin_groups(
 
 /// Within each batch, merge a bin with fewer than `min_level` cells into the
 /// bin whose centre is nearest, smallest first; a batch left with one bin
-/// keeps none. Returns, per batch, where each bin goes: a bin the batch has
-/// (its own, the one it merged into, or for a bin none of its cells had,
-/// the nearest), or `None` for a batch that keeps no bin.
+/// keeps none. A batch that keeps bins but fewer than `min_level` plain
+/// cells (cleared by the one-bin guard) puts them in the bin their mixture
+/// component (`labels`) goes to, so no level is that small. Returns, per
+/// batch, where each bin goes: a bin the batch has (its own, the one it
+/// merged into, or for a bin none of its cells had, the nearest), or `None`
+/// for a batch that keeps no bin; and how many plain cells rejoined a bin.
 fn merge_sparse_levels(
     bin: &mut [Option<usize>],
+    labels: &[usize],
     by_batch: &BTreeMap<&str, Vec<usize>>,
     centroids: &DMatrix<f32>,
     min_level: usize,
-) -> BTreeMap<Box<str>, Vec<Option<usize>>> {
+) -> (BTreeMap<Box<str>, Vec<Option<usize>>>, usize) {
     let k = centroids.nrows();
+    let mut rejoined = 0;
     let dist = |a: usize, b: usize| (centroids.row(a) - centroids.row(b)).norm_squared();
     let mut remap = BTreeMap::new();
     for (b, cells) in by_batch {
@@ -414,9 +425,20 @@ fn merge_sparse_levels(
                     .min_by(|&a, &x| dist(c, a).total_cmp(&dist(c, x))),
             };
         }
+        let plain: Vec<usize> = cells
+            .iter()
+            .copied()
+            .filter(|&i| bin[i].is_none())
+            .collect();
+        if !present.is_empty() && plain.len() < min_level {
+            rejoined += plain.len();
+            for i in plain {
+                bin[i] = to[labels[i]];
+            }
+        }
         remap.insert(Box::from(*b), to);
     }
-    remap
+    (remap, rejoined)
 }
 
 #[cfg(test)]

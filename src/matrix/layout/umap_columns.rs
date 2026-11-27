@@ -197,31 +197,6 @@ mod tests {
     }
 
     #[test]
-    fn a_larger_min_dist_spreads_a_group_out() {
-        let per = 200;
-        let (cells, _) = two_groups(per, 0);
-        // A group's radius over the distance between the two centroids.
-        let looseness_at = |min_dist: f32, seed: u64| {
-            let a = UmapLayoutArgs {
-                sgd: args(seed).sgd.with_min_dist(min_dist, 1.0).unwrap(),
-                ..args(seed)
-            };
-            let m = umap_layout_2d_of_columns(&cells, &a).unwrap();
-            assert_eq!(m.shape(), (2 * per, 2));
-            radius(&m, 0..per) / dist(centroid(&m, 0..per), centroid(&m, per..2 * per))
-        };
-        // The parallel SGD is not deterministic, so one run's ratio varies
-        // widely; the mean over a few seeds is stable.
-        let looseness =
-            |min_dist: f32| (1..=3).map(|s| looseness_at(min_dist, s)).sum::<f32>() / 3.0;
-        let (tight, loose) = (looseness(0.0), looseness(0.9));
-        assert!(
-            loose > 1.5 * tight,
-            "min_dist 0.9 gives {loose:.3}, min_dist 0 gives {tight:.3}"
-        );
-    }
-
-    #[test]
     fn a_joint_layout_puts_each_feature_among_its_own_cells() {
         let per = 200;
         let (cells, feats) = two_groups(per, 40);

@@ -223,8 +223,8 @@ fn fit_rows(z: &Rows, init: &DiagGmm, max_iter: usize) -> GmmFit {
                     model.log_joint(row, &mut lj);
                     let lse = log_sum_exp(&lj);
                     s.log_lik += lse;
-                    for c in 0..k {
-                        let r = (lj[c] - lse).exp();
+                    for (c, &l) in lj.iter().enumerate() {
+                        let r = (l - lse).exp();
                         s.n[c] += r;
                         for (j, &x) in row.iter().enumerate() {
                             let x = f64::from(x);

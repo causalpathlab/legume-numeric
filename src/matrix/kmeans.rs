@@ -53,6 +53,22 @@ pub struct KmeansRowsOpts {
     pub init_sample: usize,
 }
 
+impl KmeansRowsOpts {
+    /// Euclidean k-means of `k` clusters from `seed`, at most `max_iter`
+    /// iterations, run until no row changes label, seeded from every row.
+    #[must_use]
+    pub fn euclidean(k: usize, max_iter: usize, seed: u64) -> Self {
+        Self {
+            k,
+            max_iter,
+            seed,
+            metric: KmeansMetric::Euclidean,
+            min_changed_frac: 0.0,
+            init_sample: 0,
+        }
+    }
+}
+
 pub struct KmeansRowsFit {
     /// `[k × d]`.
     pub centroids: DMatrix<f32>,
@@ -441,17 +457,7 @@ pub fn kmeans_centroids_seeded(
     max_iter: usize,
     seed: u64,
 ) -> (DMatrix<f32>, Vec<usize>) {
-    let fit = kmeans_rows_seeded(
-        z,
-        &KmeansRowsOpts {
-            k,
-            max_iter,
-            seed,
-            metric: KmeansMetric::Euclidean,
-            min_changed_frac: 0.0,
-            init_sample: 0,
-        },
-    );
+    let fit = kmeans_rows_seeded(z, &KmeansRowsOpts::euclidean(k, max_iter, seed));
     (fit.centroids, fit.labels)
 }
 
@@ -460,6 +466,9 @@ pub fn kmeans_centroids_seeded(
 pub fn kmeans_centroids(z: &DMatrix<f32>, k: usize, max_iter: usize) -> (DMatrix<f32>, Vec<usize>) {
     kmeans_centroids_seeded(z, k, max_iter, 42)
 }
+
+mod select;
+pub use select::{kmeans_rows_best, kmeans_rss};
 
 #[cfg(test)]
 mod tests;

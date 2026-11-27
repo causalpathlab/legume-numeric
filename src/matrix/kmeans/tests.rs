@@ -357,3 +357,14 @@ fn degenerate_inputs_mirror_the_single_centroid_return() {
     let fit = kmeans_rows_seeded(&flat, &opts(2, 1, KmeansMetric::Cosine));
     assert_eq!(fit.labels, vec![0; 4]);
 }
+
+#[test]
+fn the_best_of_several_starts_is_no_worse_than_its_first() {
+    let (z, _) = planted_blobs(5, 60, 3, 0.8, 23);
+    let o = opts(5, 50, KmeansMetric::Euclidean);
+    let first = kmeans_rows_seeded(&z, &o);
+    let best = kmeans_rows_best(&z, &o, 6);
+    assert!(kmeans_rss(&z, &best) <= kmeans_rss(&z, &first));
+    // Seeded: the same starts give the same fit.
+    assert_eq!(best.labels, kmeans_rows_best(&z, &o, 6).labels);
+}

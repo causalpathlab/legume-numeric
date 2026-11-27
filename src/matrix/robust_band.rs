@@ -91,6 +91,80 @@ pub fn robust_band(
     })
 }
 
+/// A robust standardisation of one column of values: `(v − median) / scale`,
+/// softly clipped to `±clip` ([`RobustScale::apply`]), so a long tail cannot stretch the rest of the column
+/// or take a cluster of its own. `scale` is the larger of `1.4826 · MAD` and
+/// `IQR / 1.349`, both normal-consistent and blind to a thin tail; the IQR
+/// keeps two clumps of like size apart, where the MAD alone measures only
+/// the clump the median falls in. When both are 0 (most values one value),
+/// it is `1.2533 ·` the mean absolute deviation from the median.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RobustScale {
+    pub median: f32,
+    pub scale: f32,
+    pub clip: f32,
+}
+
+impl RobustScale {
+    /// The standardisation of `values`, its finite ones; `None` when none
+    /// is finite or they do not vary.
+    #[must_use]
+    pub fn fit(values: &[f32], clip: f32) -> Option<Self> {
+        let mut xs: Vec<f32> = values.iter().copied().filter(|v| v.is_finite()).collect();
+        if xs.is_empty() {
+            return None;
+        }
+        let median = median_in_place(&mut xs);
+        let q = crate::matrix::utils::quantiles(&xs, &[0.25, 0.75]);
+        let iqr = (q[1] - q[0]) / 1.349;
+        let mut dev: Vec<f32> = xs.iter().map(|&v| (v - median).abs()).collect();
+        let mean_dev = dev.iter().map(|&v| f64::from(v)).sum::<f64>() / dev.len() as f64;
+        let mad = 1.4826 * median_in_place(&mut dev);
+        let scale = if mad.max(iqr) > 0.0 {
+            mad.max(iqr)
+        } else {
+            (1.2533 * mean_dev) as f32
+        };
+        (scale > 0.0).then_some(Self {
+            median,
+            scale,
+            clip,
+        })
+    }
+
+    /// `v` standardised and softly clipped, `clip · tanh(x / clip)`: about `x`
+    /// within a few SDs, never past `±clip`, and a tail kept in order rather
+    /// than piled on the bound as a hard clip would (only values beyond about
+    /// `9 · clip` meet at it, where `tanh` rounds to 1). A non-finite `v` is 0.
+    #[must_use]
+    pub fn apply(&self, v: f32) -> f32 {
+        if v.is_finite() {
+            let x = (v - self.median) / self.scale;
+            self.clip * (x / self.clip).tanh()
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Each column of `x` standardised in place by its [`RobustScale`]; a column
+/// that does not vary is set to 0 and has `None`.
+pub fn robust_scale_columns_inplace(
+    x: &mut nalgebra::DMatrix<f32>,
+    clip: f32,
+) -> Vec<Option<RobustScale>> {
+    x.column_iter_mut()
+        .map(|mut col| {
+            let scale = RobustScale::fit(col.as_slice(), clip);
+            match scale {
+                Some(s) => col.apply(|v| *v = s.apply(*v)),
+                None => col.fill(0.0),
+            }
+            scale
+        })
+        .collect()
+}
+
 /// Robust outlier keep-mask: `keep[i] = false` when `values[i]` falls
 /// outside `median ± n_mads · MAD · 1.4826` on the requested `tail`.
 /// Count-like metrics should pass `log1p = true` so the band is symmetric
@@ -131,6 +205,31 @@ pub fn robust_outlier_keep(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_robust_scale_ignores_a_long_tail_and_falls_back_when_most_values_tie() {
+        // 99 values about 0 with spread 1, one at -100.
+        let mut v: Vec<f32> = (0..99).map(|i| (i as f32 - 49.0) / 49.0 * 1.7).collect();
+        v.push(-100.0);
+        let s = RobustScale::fit(&v, 5.0).unwrap();
+        assert!(s.median.abs() < 0.1);
+        assert!(s.scale > 1.0 && s.scale < 2.0, "{s:?}");
+        assert!(s.apply(-100.0) >= -5.0 && s.apply(-100.0) < -4.99);
+        // Tail values a few SDs apart stay apart.
+        assert!(s.apply(s.median - 6.0 * s.scale) < s.apply(s.median - 5.0 * s.scale));
+        assert!((s.apply(s.median + s.scale) - 1.0).abs() < 0.02);
+        // Mostly zeros (a MAD of 0): the mean absolute deviation scales.
+        let z: Vec<f32> = (0..100).map(|i| if i < 80 { 0.0 } else { 2.0 }).collect();
+        let s = RobustScale::fit(&z, 5.0).unwrap();
+        assert_eq!(s.median, 0.0);
+        assert!((s.scale - 1.2533 * 0.4).abs() < 1e-4);
+        assert!(RobustScale::fit(&[3.0; 10], 5.0).is_none());
+        let mut m = nalgebra::DMatrix::from_fn(100, 2, |i, j| if j == 0 { v[i] } else { 1.0 });
+        let fits = robust_scale_columns_inplace(&mut m, 5.0);
+        assert!(fits[0].is_some() && fits[1].is_none());
+        assert!(m[(99, 0)] < -4.99);
+        assert!(m.column(1).iter().all(|&x| x == 0.0));
+    }
 
     #[test]
     fn robust_lower_flags_low_outlier() {

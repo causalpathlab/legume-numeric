@@ -11,7 +11,7 @@ use rayon::prelude::*;
 /// as `(low, high)`, with the weights of its repeats summed; the edges are
 /// sorted. Each node's neighbours, with the edges' weights, are sorted by
 /// node.
-pub(super) struct PreparedGraph {
+pub(crate) struct PreparedGraph {
     edges: Vec<(usize, usize, f32)>,
     neighbours: Vec<Vec<(usize, f32)>>,
 }
@@ -21,7 +21,7 @@ impl PreparedGraph {
     /// edges whose weight is not finite or not above zero are dropped, and
     /// so are self-loops; repeated edges are summed. Panics if an edge end
     /// is not below `n`.
-    pub(super) fn new(n: usize, edges: &[(usize, usize, f32)]) -> Self {
+    pub(crate) fn new(n: usize, edges: &[(usize, usize, f32)]) -> Self {
         let mut kept: Vec<(usize, usize, f32)> = edges
             .iter()
             .map(|&(i, j, w)| {
@@ -58,12 +58,12 @@ impl PreparedGraph {
     }
 
     /// The number of nodes.
-    pub(super) fn n(&self) -> usize {
+    pub(crate) fn n(&self) -> usize {
         self.neighbours.len()
     }
 
     /// The edges, `(low, high, weight)`, sorted.
-    pub(super) fn edges(&self) -> &[(usize, usize, f32)] {
+    pub(crate) fn edges(&self) -> &[(usize, usize, f32)] {
         &self.edges
     }
 
@@ -114,14 +114,14 @@ impl WeightedGraph for PreparedGraph {
 
 /// One connected piece of a graph: its nodes, in increasing order, and the
 /// graph between them, whose node `k` is `nodes[k]`.
-pub(super) struct Piece {
-    pub(super) nodes: Vec<usize>,
-    pub(super) graph: PreparedGraph,
+pub(crate) struct Piece {
+    pub(crate) nodes: Vec<usize>,
+    pub(crate) graph: PreparedGraph,
 }
 
 /// The connected pieces of `graph`, in the order of their lowest node; a
 /// node with no edges is a piece of its own.
-pub(super) fn split(graph: &PreparedGraph) -> Vec<Piece> {
+pub(crate) fn split(graph: &PreparedGraph) -> Vec<Piece> {
     let label = connected_components(graph);
     let n_pieces = label.iter().max().map_or(0, |&c| c + 1);
     let mut nodes: Vec<Vec<usize>> = vec![Vec::new(); n_pieces];

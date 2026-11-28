@@ -43,6 +43,7 @@ pub mod rand_util;
 pub mod robust_band;
 pub mod running_quantile;
 pub mod sparse_stat;
+pub mod sparsify;
 pub mod stop;
 pub mod table;
 #[cfg(feature = "tensor")]

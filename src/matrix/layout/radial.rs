@@ -32,8 +32,7 @@
 
 use super::graph_prep::{lay_out_by_piece, PreparedGraph};
 use super::Mat;
-use crate::matrix::graph::{bfs, far_end, AdjListGraph};
-use petgraph::unionfind::UnionFind;
+use crate::matrix::graph::{bfs, far_end, maximum_spanning_tree, AdjListGraph};
 use std::f64::consts::TAU;
 
 /// Lay out the `n` nodes of the undirected graph `edges` (`(i, j, w)`, `w`
@@ -52,7 +51,7 @@ pub fn radial_tree_layout_2d_on_graph(
     lay_out_by_piece(
         &graph,
         |piece, at_first| {
-            let tree = maximum_spanning_tree(piece);
+            let tree = spanning_tree(piece);
             let tree_root = match (root, at_first) {
                 (Some(_), Some(r)) => r,
                 _ => tree_centre(&tree),
@@ -63,17 +62,13 @@ pub fn radial_tree_layout_2d_on_graph(
     )
 }
 
-/// The maximum spanning tree of a connected graph (Kruskal), its edges
-/// listed at each node in the order they joined the tree.
-fn maximum_spanning_tree(graph: &PreparedGraph) -> AdjListGraph {
+/// The maximum spanning tree of a connected graph ([`maximum_spanning_tree`]),
+/// its edges listed at each node in the order they joined the tree.
+fn spanning_tree(graph: &PreparedGraph) -> AdjListGraph {
     let edges = graph.edges();
-    let mut by_weight: Vec<usize> = (0..edges.len()).collect();
-    by_weight.sort_by(|&a, &b| edges[b].2.total_cmp(&edges[a].2));
-    let mut sets = UnionFind::<usize>::new(graph.n());
-    let tree: Vec<(usize, usize, f32)> = by_weight
+    let tree: Vec<(usize, usize, f32)> = maximum_spanning_tree(graph.n(), edges)
         .into_iter()
         .map(|e| edges[e])
-        .filter(|&(i, j, _)| sets.union(i, j))
         .collect();
     AdjListGraph::from_edges(graph.n(), &tree)
 }

@@ -58,7 +58,7 @@ type Mat = DMatrix<f32>;
 mod coarsened;
 mod diffusion;
 mod forceatlas2;
-mod graph_prep;
+pub(crate) mod graph_prep;
 mod lle;
 mod radial;
 mod stress;

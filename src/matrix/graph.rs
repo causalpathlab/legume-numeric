@@ -163,6 +163,37 @@ pub fn total_edge_weight<G: WeightedGraph + ?Sized>(g: &G) -> f32 {
     s
 }
 
+/// The maximum spanning forest of the `n`-node graph `edges` (`(i, j, w)`,
+/// any weight type), by Kruskal: the indices into `edges` of the heaviest
+/// edges that close no cycle, in the order they joined. A connected graph
+/// gives its maximum spanning tree.
+#[must_use]
+pub fn maximum_spanning_tree<W: PartialOrd + Copy>(
+    n: usize,
+    edges: &[(usize, usize, W)],
+) -> Vec<usize> {
+    let mut by_weight: Vec<usize> = (0..edges.len()).collect();
+    by_weight.sort_by(|&a, &b| {
+        edges[b]
+            .2
+            .partial_cmp(&edges[a].2)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut sets = petgraph::unionfind::UnionFind::<usize>::new(n);
+    by_weight
+        .into_iter()
+        .filter(|&e| sets.union(edges[e].0, edges[e].1))
+        .collect()
+}
+
+/// Whether the edges `pairs` join all `n` nodes into one piece.
+#[must_use]
+pub fn is_connected(n: usize, pairs: impl IntoIterator<Item = (usize, usize)>) -> bool {
+    let mut sets = petgraph::unionfind::UnionFind::<usize>::new(n);
+    let joined = pairs.into_iter().filter(|&(i, j)| sets.union(i, j)).count();
+    n == 0 || joined == n - 1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
